@@ -17,28 +17,36 @@ use crate::errors::{ErrCode, GatewayDError};
 
 #[derive(Debug)]
 pub struct ConnectionData {
-    pub conn:   tokio::net::TcpStream,
-    pub uuid:   String,
+    pub conn: tokio::net::TcpStream,
+    pub uuid: String,
 }
 
 impl ConnectionData {
     pub fn new(conn: tokio::net::TcpStream) -> Self {
-        Self { conn, uuid: Uuid::new_v4().to_string() }
+        Self {
+            conn,
+            uuid: Uuid::new_v4().to_string(),
+        }
     }
 }
 
 // ── Factory ───────────────────────────────────────────────────────────────────
 
-pub type ConnectionFactory = Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ConnectionData, GatewayDError>> + Send>> + Send + Sync>;
+pub type ConnectionFactory = Arc<
+    dyn Fn() -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<ConnectionData, GatewayDError>> + Send>,
+        > + Send
+        + Sync,
+>;
 
 // ── ChannelPool ───────────────────────────────────────────────────────────────
 
 pub struct ChannelPool {
-    tx:        mpsc::Sender<ConnectionData>,
-    rx:        tokio::sync::Mutex<mpsc::Receiver<ConnectionData>>,
+    tx: mpsc::Sender<ConnectionData>,
+    rx: tokio::sync::Mutex<mpsc::Receiver<ConnectionData>>,
     semaphore: Arc<Semaphore>,
-    factory:   ConnectionFactory,
-    max_cap:   usize,
+    factory: ConnectionFactory,
+    max_cap: usize,
 }
 
 impl ChannelPool {
@@ -47,7 +55,7 @@ impl ChannelPool {
         let (tx, rx) = mpsc::channel(max_cap);
         Arc::new(Self {
             tx,
-            rx:        tokio::sync::Mutex::new(rx),
+            rx: tokio::sync::Mutex::new(rx),
             semaphore: Arc::new(Semaphore::new(max_cap)),
             factory,
             max_cap,
@@ -60,7 +68,10 @@ impl ChannelPool {
         for _ in 0..n {
             let conn = (self.factory)().await?;
             self.tx.send(conn).await.map_err(|_| {
-                GatewayDError::new(ErrCode::PoolInitializationFailed, "pool channel closed during init")
+                GatewayDError::new(
+                    ErrCode::PoolInitializationFailed,
+                    "pool channel closed during init",
+                )
             })?;
         }
         Ok(())
@@ -69,9 +80,12 @@ impl ChannelPool {
     /// Obtain a connection from the pool (or create a new one), respecting max capacity.
     pub async fn get(&self) -> Result<PoolConn, GatewayDError> {
         // Acquire semaphore permit to enforce max-cap
-        let permit = self.semaphore.clone().acquire_owned().await.map_err(|_| {
-            GatewayDError::new(ErrCode::PoolExhausted, "pool semaphore closed")
-        })?;
+        let permit = self
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| GatewayDError::new(ErrCode::PoolExhausted, "pool semaphore closed"))?;
 
         // Try to get an idle connection, or create a fresh one
         let data = {
@@ -81,10 +95,14 @@ impl ChannelPool {
 
         let data = match data {
             Some(d) => d,
-            None    => (self.factory)().await?,
+            None => (self.factory)().await?,
         };
 
-        Ok(PoolConn { data: Some(data), tx: self.tx.clone(), _permit: permit  })
+        Ok(PoolConn {
+            data: Some(data),
+            tx: self.tx.clone(),
+            _permit: permit,
+        })
     }
 
     /// Number of idle connections in the pool.
@@ -103,13 +121,15 @@ impl ChannelPool {
 
 /// RAII guard: returns the underlying connection to the pool when dropped.
 pub struct PoolConn {
-    data:    Option<ConnectionData>,
-    tx:      mpsc::Sender<ConnectionData>,
+    data: Option<ConnectionData>,
+    tx: mpsc::Sender<ConnectionData>,
     _permit: tokio::sync::OwnedSemaphorePermit,
 }
 
 impl PoolConn {
-    pub fn uuid(&self) -> &str { &self.data.as_ref().unwrap().uuid }
+    pub fn uuid(&self) -> &str {
+        &self.data.as_ref().unwrap().uuid
+    }
 }
 
 impl Drop for PoolConn {

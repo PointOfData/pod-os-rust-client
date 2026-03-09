@@ -16,7 +16,7 @@ pub fn get_timestamp_from_time(t: SystemTime) -> String {
 }
 
 fn timestamp_from_duration(d: std::time::Duration) -> String {
-    let secs  = d.as_secs();
+    let secs = d.as_secs();
     let usecs = d.subsec_micros();
     format!("+{}.{:06}", secs, usecs)
 }

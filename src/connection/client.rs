@@ -24,7 +24,11 @@ use tokio::{
 };
 
 use crate::{
-    connection::{resolver, retry::Retry, traits::{Tracer, WireHook}},
+    connection::{
+        resolver,
+        retry::Retry,
+        traits::{Tracer, WireHook},
+    },
     errors::{ErrCode, GatewayDError},
     log::{Logger, NoOpLogger},
 };
@@ -40,11 +44,11 @@ const LEN_PREFIX_BYTES: usize = 9;
 
 #[derive(Clone)]
 pub struct ClientConfig {
-    pub tracer:          Arc<dyn Tracer>,
-    pub logger:          Arc<dyn Logger>,
-    pub wire_hook:       Arc<dyn WireHook>,
-    pub dial_timeout:    Duration,
-    pub send_timeout:    Duration,
+    pub tracer: Arc<dyn Tracer>,
+    pub logger: Arc<dyn Logger>,
+    pub wire_hook: Arc<dyn WireHook>,
+    pub dial_timeout: Duration,
+    pub send_timeout: Duration,
     pub receive_timeout: Duration,
 }
 
@@ -52,11 +56,11 @@ impl Default for ClientConfig {
     fn default() -> Self {
         use crate::connection::traits::{NoOpTracer, NoOpWireHook};
         Self {
-            tracer:          Arc::new(NoOpTracer),
-            logger:          Arc::new(NoOpLogger),
-            wire_hook:       Arc::new(NoOpWireHook),
-            dial_timeout:    Duration::from_secs(10),
-            send_timeout:    Duration::from_secs(30),
+            tracer: Arc::new(NoOpTracer),
+            logger: Arc::new(NoOpLogger),
+            wire_hook: Arc::new(NoOpWireHook),
+            dial_timeout: Duration::from_secs(10),
+            send_timeout: Duration::from_secs(30),
             receive_timeout: Duration::from_secs(30),
         }
     }
@@ -67,52 +71,65 @@ impl Default for ClientConfig {
 /// Async TCP connection to a Pod-OS gateway.
 pub struct Client {
     write_half: Mutex<Option<tokio::net::tcp::OwnedWriteHalf>>,
-    read_half:  Mutex<Option<tokio::net::tcp::OwnedReadHalf>>,
-    connected:  AtomicBool,
+    read_half: Mutex<Option<tokio::net::tcp::OwnedReadHalf>>,
+    connected: AtomicBool,
 
-    pub network:     String,
-    pub host:        String,
-    pub port:        String,
-    pub actor_name:  String,
-    pub group_name:  String,
+    pub network: String,
+    pub host: String,
+    pub port: String,
+    pub actor_name: String,
+    pub group_name: String,
 
     pub receive_timeout: Duration,
-    pub send_timeout:    Duration,
-    pub dial_timeout:    Duration,
+    pub send_timeout: Duration,
+    pub dial_timeout: Duration,
 
     chunk_size: std::sync::atomic::AtomicUsize,
 
-    retry:     Arc<Retry>,
-    logger:    Arc<dyn Logger>,
+    retry: Arc<Retry>,
+    logger: Arc<dyn Logger>,
     wire_hook: Arc<dyn WireHook>,
-    _tracer:   Arc<dyn Tracer>,
+    _tracer: Arc<dyn Tracer>,
 }
 
 impl Client {
     /// Dial and connect, retrying according to the supplied `Retry` policy.
     pub async fn connect(
-        network:    &str,
-        host:       &str,
-        port:       &str,
+        network: &str,
+        host: &str,
+        port: &str,
         actor_name: &str,
-        retry:      Arc<Retry>,
-        cfg:        ClientConfig,
+        retry: Arc<Retry>,
+        cfg: ClientConfig,
     ) -> Result<Arc<Self>, GatewayDError> {
         let addr = resolver::make_addr(host, port);
         let dial_timeout = cfg.dial_timeout;
         let logger = cfg.logger.clone();
 
-        let stream = retry.run(|attempt| {
-            let addr = addr.clone();
-            let logger = logger.clone();
-            async move {
-                logger.debug("dialing gateway", &[("addr", &addr), ("attempt", &attempt)]);
-                timeout(dial_timeout, TcpStream::connect(&addr))
-                    .await
-                    .map_err(|_| GatewayDError::new(ErrCode::ClientDialFailed, format!("dial timeout: {}", addr)))?
-                    .map_err(|e| GatewayDError::wrap(ErrCode::ClientDialFailed, format!("dial failed: {}", addr), e))
-            }
-        }).await?;
+        let stream = retry
+            .run(|attempt| {
+                let addr = addr.clone();
+                let logger = logger.clone();
+                async move {
+                    logger.debug("dialing gateway", &[("addr", &addr), ("attempt", &attempt)]);
+                    timeout(dial_timeout, TcpStream::connect(&addr))
+                        .await
+                        .map_err(|_| {
+                            GatewayDError::new(
+                                ErrCode::ClientDialFailed,
+                                format!("dial timeout: {}", addr),
+                            )
+                        })?
+                        .map_err(|e| {
+                            GatewayDError::wrap(
+                                ErrCode::ClientDialFailed,
+                                format!("dial failed: {}", addr),
+                                e,
+                            )
+                        })
+                }
+            })
+            .await?;
 
         // Disable Nagle — optimises for low-latency small messages
         stream.set_nodelay(true).ok();
@@ -120,40 +137,47 @@ impl Client {
         let (read_half, write_half) = stream.into_split();
 
         Ok(Arc::new(Self {
-            write_half:      Mutex::new(Some(write_half)),
-            read_half:       Mutex::new(Some(read_half)),
-            connected:       AtomicBool::new(true),
-            network:         network.to_string(),
-            host:            host.to_string(),
-            port:            port.to_string(),
-            actor_name:      actor_name.to_string(),
-            group_name:      String::new(),
+            write_half: Mutex::new(Some(write_half)),
+            read_half: Mutex::new(Some(read_half)),
+            connected: AtomicBool::new(true),
+            network: network.to_string(),
+            host: host.to_string(),
+            port: port.to_string(),
+            actor_name: actor_name.to_string(),
+            group_name: String::new(),
             receive_timeout: cfg.receive_timeout,
-            send_timeout:    cfg.send_timeout,
-            dial_timeout:    cfg.dial_timeout,
-            chunk_size:      std::sync::atomic::AtomicUsize::new(INITIAL_CHUNK_SIZE),
+            send_timeout: cfg.send_timeout,
+            dial_timeout: cfg.dial_timeout,
+            chunk_size: std::sync::atomic::AtomicUsize::new(INITIAL_CHUNK_SIZE),
             retry,
-            logger:          cfg.logger,
-            wire_hook:       cfg.wire_hook,
-            _tracer:         cfg.tracer,
+            logger: cfg.logger,
+            wire_hook: cfg.wire_hook,
+            _tracer: cfg.tracer,
         }))
     }
 
-    pub fn is_connected(&self) -> bool { self.connected.load(Ordering::Acquire) }
+    pub fn is_connected(&self) -> bool {
+        self.connected.load(Ordering::Acquire)
+    }
 
-    pub fn remote_addr(&self) -> String { resolver::make_addr(&self.host, &self.port) }
+    pub fn remote_addr(&self) -> String {
+        resolver::make_addr(&self.host, &self.port)
+    }
 
     // ── Send ─────────────────────────────────────────────────────────────────
 
     /// Write `data` to the TCP stream, respecting `send_timeout`.
     pub async fn send(&self, data: &[u8]) -> Result<(), GatewayDError> {
         if !self.is_connected() {
-            return Err(GatewayDError::new(ErrCode::ClientNotConnected, "client is not connected"));
+            return Err(GatewayDError::new(
+                ErrCode::ClientNotConnected,
+                "client is not connected",
+            ));
         }
         let mut guard = self.write_half.lock().await;
-        let writer = guard.as_mut().ok_or_else(|| {
-            GatewayDError::new(ErrCode::ClientNotConnected, "write half is gone")
-        })?;
+        let writer = guard
+            .as_mut()
+            .ok_or_else(|| GatewayDError::new(ErrCode::ClientNotConnected, "write half is gone"))?;
 
         let mut zero_writes = 0usize;
         let mut pos = 0usize;
@@ -169,7 +193,10 @@ impl Client {
                 zero_writes += 1;
                 if zero_writes >= MAX_ZERO_WRITES {
                     self.connected.store(false, Ordering::Release);
-                    return Err(GatewayDError::new(ErrCode::ClientSendFailed, "repeated zero-byte writes"));
+                    return Err(GatewayDError::new(
+                        ErrCode::ClientSendFailed,
+                        "repeated zero-byte writes",
+                    ));
                 }
             } else {
                 zero_writes = 0;
@@ -190,24 +217,34 @@ impl Client {
     /// `decode_message`.
     pub async fn receive(&self) -> Result<Vec<u8>, GatewayDError> {
         if !self.is_connected() {
-            return Err(GatewayDError::new(ErrCode::ClientNotConnected, "client is not connected"));
+            return Err(GatewayDError::new(
+                ErrCode::ClientNotConnected,
+                "client is not connected",
+            ));
         }
         let mut guard = self.read_half.lock().await;
-        let reader = guard.as_mut().ok_or_else(|| {
-            GatewayDError::new(ErrCode::ClientNotConnected, "read half is gone")
-        })?;
+        let reader = guard
+            .as_mut()
+            .ok_or_else(|| GatewayDError::new(ErrCode::ClientNotConnected, "read half is gone"))?;
 
         // ── Read the 9-byte length prefix ─────────────────────────────────
         let mut prefix = [0u8; LEN_PREFIX_BYTES];
         let read_prefix = reader.read_exact(&mut prefix);
         timeout(self.receive_timeout, read_prefix)
             .await
-            .map_err(|_| GatewayDError::new(ErrCode::ClientReceiveFailed, "receive timeout (prefix)"))?
-            .map_err(|e| GatewayDError::wrap(ErrCode::ClientReceiveFailed, "read prefix error", e))?;
+            .map_err(|_| {
+                GatewayDError::new(ErrCode::ClientReceiveFailed, "receive timeout (prefix)")
+            })?
+            .map_err(|e| {
+                GatewayDError::wrap(ErrCode::ClientReceiveFailed, "read prefix error", e)
+            })?;
 
         let total_len = parse_length_prefix(&prefix)?;
         if total_len < LEN_PREFIX_BYTES {
-            return Err(GatewayDError::new(ErrCode::ClientReceiveFailed, "declared totalLength < 9"));
+            return Err(GatewayDError::new(
+                ErrCode::ClientReceiveFailed,
+                "declared totalLength < 9",
+            ));
         }
         let body_len = total_len - LEN_PREFIX_BYTES;
 
@@ -216,17 +253,24 @@ impl Client {
         buf.extend_from_slice(&prefix);
         buf.resize(total_len, 0);
 
-        let chunk_size = self.chunk_size.load(Ordering::Relaxed).max(INITIAL_CHUNK_SIZE);
+        let chunk_size = self
+            .chunk_size
+            .load(Ordering::Relaxed)
+            .max(INITIAL_CHUNK_SIZE);
         let mut pos = LEN_PREFIX_BYTES;
 
         while pos < total_len {
-            let end   = (pos + chunk_size).min(total_len);
+            let end = (pos + chunk_size).min(total_len);
             let slice = &mut buf[pos..end];
             let read_fut = reader.read_exact(slice);
             timeout(self.receive_timeout, read_fut)
                 .await
-                .map_err(|_| GatewayDError::new(ErrCode::ClientReceiveFailed, "receive timeout (body)"))?
-                .map_err(|e| GatewayDError::wrap(ErrCode::ClientReceiveFailed, "read body error", e))?;
+                .map_err(|_| {
+                    GatewayDError::new(ErrCode::ClientReceiveFailed, "receive timeout (body)")
+                })?
+                .map_err(|e| {
+                    GatewayDError::wrap(ErrCode::ClientReceiveFailed, "read body error", e)
+                })?;
             pos = end;
         }
 
@@ -251,22 +295,33 @@ impl Client {
         let logger = self.logger.clone();
         let dial_timeout = self.dial_timeout;
 
-        let stream = self.retry.run(|attempt| {
-            let addr = addr.clone();
-            let logger = logger.clone();
-            async move {
-                logger.debug("reconnecting", &[("addr", &addr), ("attempt", &attempt)]);
-                timeout(dial_timeout, TcpStream::connect(&addr))
-                    .await
-                    .map_err(|_| GatewayDError::new(ErrCode::ClientReconnectFailed, "reconnect timeout"))?
-                    .map_err(|e| GatewayDError::wrap(ErrCode::ClientReconnectFailed, "reconnect failed", e))
-            }
-        }).await?;
+        let stream = self
+            .retry
+            .run(|attempt| {
+                let addr = addr.clone();
+                let logger = logger.clone();
+                async move {
+                    logger.debug("reconnecting", &[("addr", &addr), ("attempt", &attempt)]);
+                    timeout(dial_timeout, TcpStream::connect(&addr))
+                        .await
+                        .map_err(|_| {
+                            GatewayDError::new(ErrCode::ClientReconnectFailed, "reconnect timeout")
+                        })?
+                        .map_err(|e| {
+                            GatewayDError::wrap(
+                                ErrCode::ClientReconnectFailed,
+                                "reconnect failed",
+                                e,
+                            )
+                        })
+                }
+            })
+            .await?;
 
         stream.set_nodelay(true).ok();
         let (r, w) = stream.into_split();
         *self.write_half.lock().await = Some(w);
-        *self.read_half.lock().await  = Some(r);
+        *self.read_half.lock().await = Some(r);
         self.connected.store(true, Ordering::Release);
         Ok(())
     }
@@ -276,7 +331,7 @@ impl Client {
         self.connected.store(false, Ordering::Release);
         // Dropping write half triggers a graceful TCP close
         *self.write_half.lock().await = None;
-        *self.read_half.lock().await  = None;
+        *self.read_half.lock().await = None;
     }
 }
 
@@ -284,14 +339,25 @@ impl Client {
 
 /// Parse a 9-byte length prefix.  Accepts `x` + 8 hex digits OR 9 decimal digits.
 fn parse_length_prefix(prefix: &[u8; 9]) -> Result<usize, GatewayDError> {
-    let s = std::str::from_utf8(prefix)
-        .map_err(|_| GatewayDError::new(ErrCode::ClientReceiveFailed, "length prefix is not UTF-8"))?;
-    if s.starts_with('x') {
-        usize::from_str_radix(&s[1..], 16)
-            .map_err(|_| GatewayDError::new(ErrCode::ClientReceiveFailed, format!("invalid hex prefix: {s}")))
+    let s = std::str::from_utf8(prefix).map_err(|_| {
+        GatewayDError::new(ErrCode::ClientReceiveFailed, "length prefix is not UTF-8")
+    })?;
+    if let Some(hex) = s.strip_prefix('x') {
+        usize::from_str_radix(hex, 16).map_err(|_| {
+            GatewayDError::new(
+                ErrCode::ClientReceiveFailed,
+                format!("invalid hex prefix: {s}"),
+            )
+        })
     } else {
-        s.trim_start_matches('0').parse::<usize>()
+        s.trim_start_matches('0')
+            .parse::<usize>()
             .or_else(|_| if s == "000000000" { Ok(0) } else { Err(()) })
-            .map_err(|_| GatewayDError::new(ErrCode::ClientReceiveFailed, format!("invalid decimal prefix: {s}")))
+            .map_err(|_| {
+                GatewayDError::new(
+                    ErrCode::ClientReceiveFailed,
+                    format!("invalid decimal prefix: {s}"),
+                )
+            })
     }
 }

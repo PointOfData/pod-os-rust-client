@@ -1,32 +1,52 @@
 [package]
-name = "pod-os-client"
-version = "0.1.0"
-edition = "2021"
+name        = "pod-os-client"
+version     = "0.1.0"
+edition     = "2021"
 rust-version = "1.75"
-description = "High-performance async Rust client for the Pod-OS Gateway"
-repository = "https://github.com/PointOfData/pod-os-rust-client"
-license = "MIT"
-keywords = ["pod-os", "gateway", "neural-memory", "ai", "client"]
-categories = ["network-programming", "asynchronous"]
+description  = "High-performance async Rust client for the Pod-OS Gateway"
+repository   = "https://github.com/PointOfData/pod-os-rust-client"
+homepage     = "https://github.com/PointOfData/pod-os-rust-client"
+documentation = "https://docs.rs/pod-os-client"
+readme       = "README.md"
+license      = "MIT"
+keywords     = ["pod-os", "gateway", "neural-memory", "ai", "client"]
+categories   = ["network-programming", "asynchronous"]
+exclude      = ["target/", ".github/"]
+
+# ── Runtime dependencies ──────────────────────────────────────────────────────
 
 [dependencies]
-tokio       = { version = "1", features = ["full"] }
+# Async runtime — only the features this library actually uses.
+# Applications must enable `rt-multi-thread` (or `rt`) in their own Cargo.toml.
+tokio       = { version = "1", features = ["net", "io-util", "sync", "time", "rt", "macros"] }
 bytes       = "1"
 uuid        = { version = "1", features = ["v4"] }
 dashmap     = "6"
 serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"
 tracing     = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 thiserror   = "2"
 once_cell   = "1"
-reqwest     = { version = "0.12", features = ["json"], optional = true }
 base64      = "0.22"
 async-trait = "0.1"
 
+# Optional: AI-assisted validation remediation via vLLM / OpenAI-compatible endpoint
+reqwest = { version = "0.12", features = ["json"], optional = true }
+
+# Optional: tracing-subscriber (applications usually configure their own subscriber)
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"], optional = true }
+
+# ── Feature flags ─────────────────────────────────────────────────────────────
+
 [features]
 default      = []
+# Enables ExplainValidationErrors() — calls a vLLM / OpenAI-compatible endpoint
 knowledge-ai = ["reqwest"]
+# Re-export tracing-subscriber for convenience (apps that don't bring their own)
+tracing-fmt  = ["tracing-subscriber"]
+
+# ── Dev dependencies ──────────────────────────────────────────────────────────
 
 [dev-dependencies]
+tokio      = { version = "1", features = ["full"] }
 tokio-test = "0.4"

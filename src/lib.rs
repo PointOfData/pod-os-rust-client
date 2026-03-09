@@ -71,29 +71,22 @@
 
 pub mod client;
 pub mod config;
+pub mod connection;
 pub mod errors;
 pub mod knowledge;
 pub mod log;
 pub mod message;
-pub mod connection;
 
 // ── Top-level re-exports ─────────────────────────────────────────────────────
 
 pub use client::{
-    Client,
-    get_client_by_gateway_actor_name,
-    get_client_count,
-    is_connection_error,
-    is_timeout_error,
-    remove_client_by_gateway_actor_name,
-    ERR_CONNECTION_LOST,
+    get_client_by_gateway_actor_name, get_client_count, is_connection_error, is_timeout_error,
+    remove_client_by_gateway_actor_name, Client, ERR_CONNECTION_LOST,
 };
 pub use config::Config;
 pub use errors::{ErrCode, GatewayDError};
 pub use log::{Level, Logger, NoOpLogger, TracingLogger};
 pub use message::{
-    decode_message, encode_message,
-    get_timestamp, get_timestamp_from_time,
-    Message, Envelope, Intent,
-    SocketMessage,
+    decode_message, encode_message, get_timestamp, get_timestamp_from_time, Envelope, Intent,
+    Message, SocketMessage,
 };

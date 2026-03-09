@@ -4,10 +4,10 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
     Disabled = 0,
-    Error    = 1,
-    Warn     = 2,
-    Info     = 3,
-    Debug    = 4,
+    Error = 1,
+    Warn = 2,
+    Info = 3,
+    Debug = 4,
 }
 
 impl From<u8> for Level {
@@ -26,8 +26,8 @@ impl From<u8> for Level {
 pub trait Logger: Send + Sync + 'static {
     fn enabled(&self, level: Level) -> bool;
     fn debug(&self, msg: &str, fields: &[(&str, &dyn std::fmt::Display)]);
-    fn info (&self, msg: &str, fields: &[(&str, &dyn std::fmt::Display)]);
-    fn warn (&self, msg: &str, fields: &[(&str, &dyn std::fmt::Display)]);
+    fn info(&self, msg: &str, fields: &[(&str, &dyn std::fmt::Display)]);
+    fn warn(&self, msg: &str, fields: &[(&str, &dyn std::fmt::Display)]);
     fn error(&self, msg: &str, fields: &[(&str, &dyn std::fmt::Display)]);
 }
 
@@ -36,10 +36,12 @@ pub trait Logger: Send + Sync + 'static {
 pub struct NoOpLogger;
 
 impl Logger for NoOpLogger {
-    fn enabled(&self, _level: Level) -> bool { false }
+    fn enabled(&self, _level: Level) -> bool {
+        false
+    }
     fn debug(&self, _msg: &str, _fields: &[(&str, &dyn std::fmt::Display)]) {}
-    fn info (&self, _msg: &str, _fields: &[(&str, &dyn std::fmt::Display)]) {}
-    fn warn (&self, _msg: &str, _fields: &[(&str, &dyn std::fmt::Display)]) {}
+    fn info(&self, _msg: &str, _fields: &[(&str, &dyn std::fmt::Display)]) {}
+    fn warn(&self, _msg: &str, _fields: &[(&str, &dyn std::fmt::Display)]) {}
     fn error(&self, _msg: &str, _fields: &[(&str, &dyn std::fmt::Display)]) {}
 }
 
@@ -55,13 +57,15 @@ pub struct TracingLogger {
 }
 
 impl TracingLogger {
-    pub fn new(level: Level) -> Arc<dyn Logger> {
+    pub fn build(level: Level) -> Arc<dyn Logger> {
         Arc::new(Self { level })
     }
 }
 
 impl Logger for TracingLogger {
-    fn enabled(&self, level: Level) -> bool { level <= self.level && self.level != Level::Disabled }
+    fn enabled(&self, level: Level) -> bool {
+        level <= self.level && self.level != Level::Disabled
+    }
 
     fn debug(&self, msg: &str, fields: &[(&str, &dyn std::fmt::Display)]) {
         if self.enabled(Level::Debug) {

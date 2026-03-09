@@ -1,6 +1,6 @@
 # pod-os-rust-client
 
-High-performance async Rust client for the [Pod-OS](https://github.com/PointOfData) Gateway — a direct port of the [Go client](https://github.com/PointOfData/pod-os-go-client) optimised for software engineers, machine-learning scientists, and generative-AI coding/debugging agents.
+High-performance async Rust client for the [Pod-OS](https://github.com/PointOfData) — optimized for software engineers, machine-learning scientists, and generative-AI coding/debugging agents.
 
 ## Features
 

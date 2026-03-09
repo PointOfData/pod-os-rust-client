@@ -23,7 +23,9 @@ impl Span for NoOpSpan {
 
 pub struct NoOpTracer;
 impl Tracer for NoOpTracer {
-    fn start(&self, _: &str) -> Arc<dyn Span> { Arc::new(NoOpSpan) }
+    fn start(&self, _: &str) -> Arc<dyn Span> {
+        Arc::new(NoOpSpan)
+    }
 }
 
 // ── WireHook ─────────────────────────────────────────────────────────────────

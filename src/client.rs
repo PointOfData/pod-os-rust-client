@@ -19,7 +19,7 @@ use std::{
 
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{broadcast, oneshot, RwLock};
 use uuid::Uuid;
 
 use crate::{
@@ -32,8 +32,7 @@ use crate::{
     errors::{ErrCode, GatewayDError},
     log::{Level, Logger, NoOpLogger, TracingLogger},
     message::{
-        decode_message, encode_message,
-        intents,
+        decode_message, encode_message, intents,
         types::{Envelope, Message, SocketMessage},
     },
 };
@@ -42,7 +41,10 @@ use crate::{
 
 /// Returned when the connection was lost while a request was in flight.
 pub static ERR_CONNECTION_LOST: Lazy<GatewayDError> = Lazy::new(|| {
-    GatewayDError::new(ErrCode::GatewayDisconnected, "connection to gateway was lost during request")
+    GatewayDError::new(
+        ErrCode::GatewayDisconnected,
+        "connection to gateway was lost during request",
+    )
 });
 
 // ── Global client registry ────────────────────────────────────────────────────
@@ -69,7 +71,7 @@ pub async fn remove_client_by_gateway_actor_name(actor_name: &str) {
 }
 
 async fn register_client(client: Arc<Client>) -> Result<(), GatewayDError> {
-    let key   = client.key.clone();
+    let key = client.key.clone();
     let actor = client.cfg.gateway_actor_name.clone();
     CLIENT_REGISTRY.write().await.insert(key, client.clone());
     ACTOR_REGISTRY.write().await.insert(actor, client);
@@ -78,33 +80,40 @@ async fn register_client(client: Arc<Client>) -> Result<(), GatewayDError> {
 
 // ── Response channel types ────────────────────────────────────────────────────
 
-type ResponseSender    = oneshot::Sender<Result<Arc<Message>, GatewayDError>>;
+type ResponseSender = oneshot::Sender<Result<Arc<Message>, GatewayDError>>;
 type ResponseSenderRaw = oneshot::Sender<Result<(Arc<Message>, Vec<u8>), GatewayDError>>;
 
 // ── Shutdown signal ───────────────────────────────────────────────────────────
 
 /// Sent to the receiver task to request graceful shutdown.
-type ShutdownTx = tokio::sync::broadcast::Sender<()>;
+type ShutdownTx = broadcast::Sender<()>;
+
+/// Default capacity of the unsolicited-message broadcast channel.
+const INCOMING_CHANNEL_CAPACITY: usize = 64;
 
 // ── Client ────────────────────────────────────────────────────────────────────
 
 pub struct Client {
     conn: Arc<ConnClient>,
-    pub cfg:               Config,
+    pub cfg: Config,
     pub gateway_actor_name: String,
-    pub client_name:       String,
-    key:                   String,
+    pub client_name: String,
+    key: String,
 
     // Concurrent mode: lock-free pending maps
-    pending:     DashMap<String, ResponseSender>,
+    pending: DashMap<String, ResponseSender>,
     pending_raw: DashMap<String, ResponseSenderRaw>,
 
-    receiver_active:   AtomicBool,
+    /// Broadcast channel for unsolicited (push) messages from the gateway.
+    /// Subscribe with `subscribe_incoming()` to receive actor requests.
+    incoming_tx: broadcast::Sender<Arc<Message>>,
+
+    receiver_active: AtomicBool,
     /// std::sync::Mutex so `start_receiver` can lock from sync context.
     receiver_shutdown: StdMutex<Option<ShutdownTx>>,
 
     // Reconnection state
-    reconnecting:      AtomicBool,
+    reconnecting: AtomicBool,
     reconnect_attempt: AtomicUsize,
 
     logger: Arc<dyn Logger>,
@@ -115,21 +124,29 @@ impl Client {
 
     pub async fn new(cfg: Config) -> Result<Arc<Self>, GatewayDError> {
         if cfg.client_name.is_empty() {
-            return Err(GatewayDError::new(ErrCode::InvalidConfig, "ClientName must not be empty"));
+            return Err(GatewayDError::new(
+                ErrCode::InvalidConfig,
+                "ClientName must not be empty",
+            ));
         }
         if cfg.gateway_actor_name.is_empty() {
-            return Err(GatewayDError::new(ErrCode::InvalidConfig, "GatewayActorName must not be empty"));
+            return Err(GatewayDError::new(
+                ErrCode::InvalidConfig,
+                "GatewayActorName must not be empty",
+            ));
         }
 
         let key = format!("{}:{}", cfg.client_name, cfg.gateway_actor_name);
         // Return existing connected client from registry
         if let Some(existing) = CLIENT_REGISTRY.read().await.get(&key).cloned() {
-            if existing.is_connected() { return Ok(existing); }
+            if existing.is_connected() {
+                return Ok(existing);
+            }
         }
 
         let logger: Arc<dyn Logger> = cfg.logger.clone().unwrap_or_else(|| {
             if cfg.log_level > 0 {
-                TracingLogger::new(Level::from(cfg.log_level))
+                TracingLogger::build(Level::from(cfg.log_level))
             } else {
                 Arc::new(NoOpLogger)
             }
@@ -143,11 +160,14 @@ impl Client {
         ));
 
         let conn_cfg = ClientConfig {
-            tracer:          cfg.tracer.clone().unwrap_or_else(|| Arc::new(NoOpTracer)),
-            logger:          logger.clone(),
-            wire_hook:       cfg.wire_hook.clone().unwrap_or_else(|| Arc::new(NoOpWireHook)),
-            dial_timeout:    cfg.dial_timeout,
-            send_timeout:    cfg.send_timeout,
+            tracer: cfg.tracer.clone().unwrap_or_else(|| Arc::new(NoOpTracer)),
+            logger: logger.clone(),
+            wire_hook: cfg
+                .wire_hook
+                .clone()
+                .unwrap_or_else(|| Arc::new(NoOpWireHook)),
+            dial_timeout: cfg.dial_timeout,
+            send_timeout: cfg.send_timeout,
             receive_timeout: cfg.receive_timeout,
         };
 
@@ -158,23 +178,27 @@ impl Client {
             &cfg.gateway_actor_name,
             retry,
             conn_cfg,
-        ).await?;
+        )
+        .await?;
 
         let enable_concurrent = cfg.enable_concurrent_mode;
         let streaming_enabled = cfg.streaming_enabled();
 
+        let (incoming_tx, _) = broadcast::channel::<Arc<Message>>(INCOMING_CHANNEL_CAPACITY);
+
         let client = Arc::new(Self {
-            conn:                  conn,
-            gateway_actor_name:    cfg.gateway_actor_name.clone(),
-            client_name:           cfg.client_name.clone(),
-            key:                   key,
+            conn,
+            gateway_actor_name: cfg.gateway_actor_name.clone(),
+            client_name: cfg.client_name.clone(),
+            key,
             cfg,
-            pending:               DashMap::new(),
-            pending_raw:           DashMap::new(),
-            receiver_active:       AtomicBool::new(false),
-            receiver_shutdown:     StdMutex::new(None),
-            reconnecting:          AtomicBool::new(false),
-            reconnect_attempt:     AtomicUsize::new(0),
+            pending: DashMap::new(),
+            pending_raw: DashMap::new(),
+            incoming_tx,
+            receiver_active: AtomicBool::new(false),
+            receiver_shutdown: StdMutex::new(None),
+            reconnecting: AtomicBool::new(false),
+            reconnect_attempt: AtomicUsize::new(0),
             logger,
         });
 
@@ -197,30 +221,49 @@ impl Client {
     async fn authenticate(&self) -> Result<(), GatewayDError> {
         let msg = Message {
             envelope: Envelope {
-                to:          format!("$system@{}", self.gateway_actor_name),
-                from:        format!("{}@{}", self.client_name, self.gateway_actor_name),
-                intent:      intents::GATEWAY_ID.clone(),
+                to: format!("$system@{}", self.gateway_actor_name),
+                from: format!("{}@{}", self.client_name, self.gateway_actor_name),
+                intent: intents::GATEWAY_ID.clone(),
                 client_name: self.client_name.clone(),
-                passcode:    self.cfg.passcode.clone(),
-                message_id:  Uuid::new_v4().to_string(),
+                passcode: self.cfg.passcode.clone(),
+                message_id: Uuid::new_v4().to_string(),
                 ..Default::default()
             },
             ..Default::default()
         };
-        let encoded = encode_message(&msg, "")
-            .map_err(|e| GatewayDError::new(ErrCode::AuthenticationFailed, format!("encode GatewayId: {e}")))?;
-        self.conn.send(encoded.as_bytes()).await
-            .map_err(|e| GatewayDError::new(ErrCode::AuthenticationFailed, format!("send GatewayId: {}", e.message)))?;
+        let encoded = encode_message(&msg, "").map_err(|e| {
+            GatewayDError::new(
+                ErrCode::AuthenticationFailed,
+                format!("encode GatewayId: {e}"),
+            )
+        })?;
+        self.conn.send(encoded.as_bytes()).await.map_err(|e| {
+            GatewayDError::new(
+                ErrCode::AuthenticationFailed,
+                format!("send GatewayId: {}", e.message),
+            )
+        })?;
 
-        let raw = self.conn.receive().await
-            .map_err(|e| GatewayDError::new(ErrCode::AuthenticationFailed, format!("receive GatewayId response: {}", e.message)))?;
-        let resp = decode_message(&raw)
-            .map_err(|e| GatewayDError::new(ErrCode::AuthenticationFailed, format!("decode GatewayId response: {e}")))?;
+        let raw = self.conn.receive().await.map_err(|e| {
+            GatewayDError::new(
+                ErrCode::AuthenticationFailed,
+                format!("receive GatewayId response: {}", e.message),
+            )
+        })?;
+        let resp = decode_message(&raw).map_err(|e| {
+            GatewayDError::new(
+                ErrCode::AuthenticationFailed,
+                format!("decode GatewayId response: {e}"),
+            )
+        })?;
 
         if resp.processing_status() == "ERROR" {
             return Err(GatewayDError::new(
                 ErrCode::AuthenticationFailed,
-                format!("gateway rejected authentication: {}", resp.processing_message()),
+                format!(
+                    "gateway rejected authentication: {}",
+                    resp.processing_message()
+                ),
             ));
         }
         Ok(())
@@ -229,16 +272,20 @@ impl Client {
     async fn send_stream_on(&self) -> Result<(), GatewayDError> {
         let msg = Message {
             envelope: Envelope {
-                to:         format!("$system@{}", self.gateway_actor_name),
-                from:       format!("{}@{}", self.client_name, self.gateway_actor_name),
-                intent:     intents::GATEWAY_STREAM_ON.clone(),
+                to: format!("$system@{}", self.gateway_actor_name),
+                from: format!("{}@{}", self.client_name, self.gateway_actor_name),
+                intent: intents::GATEWAY_STREAM_ON.clone(),
                 message_id: Uuid::new_v4().to_string(),
                 ..Default::default()
             },
             ..Default::default()
         };
-        let encoded = encode_message(&msg, "")
-            .map_err(|e| GatewayDError::new(ErrCode::ClientSendFailed, format!("encode GatewayStreamOn: {e}")))?;
+        let encoded = encode_message(&msg, "").map_err(|e| {
+            GatewayDError::new(
+                ErrCode::ClientSendFailed,
+                format!("encode GatewayStreamOn: {e}"),
+            )
+        })?;
         self.conn.send(encoded.as_bytes()).await
     }
 
@@ -255,7 +302,10 @@ impl Client {
     }
 
     /// Same as `send_message` but also returns the raw wire bytes.
-    pub async fn send_message_with_raw(&self, msg: &mut Message) -> Result<(Arc<Message>, Vec<u8>), GatewayDError> {
+    pub async fn send_message_with_raw(
+        &self,
+        msg: &mut Message,
+    ) -> Result<(Arc<Message>, Vec<u8>), GatewayDError> {
         self.autocorrect_envelope(msg);
         if self.receiver_active.load(Ordering::Acquire) {
             self.send_concurrent_raw(msg).await
@@ -270,12 +320,37 @@ impl Client {
         self.conn.send(msg.as_bytes()).await
     }
 
-    pub fn is_connected(&self)     -> bool  { self.conn.is_connected() }
-    pub fn client_name(&self)      -> &str  { &self.client_name }
-    pub fn actor_name(&self)       -> &str  { &self.gateway_actor_name }
-    pub fn is_reconnecting(&self)  -> bool  { self.reconnecting.load(Ordering::Acquire) }
-    pub fn reconnect_attempt(&self) -> usize { self.reconnect_attempt.load(Ordering::Acquire) }
-    pub fn is_receiver_active(&self) -> bool { self.receiver_active.load(Ordering::Acquire) }
+    pub fn is_connected(&self) -> bool {
+        self.conn.is_connected()
+    }
+    pub fn client_name(&self) -> &str {
+        &self.client_name
+    }
+    pub fn actor_name(&self) -> &str {
+        &self.gateway_actor_name
+    }
+    pub fn is_reconnecting(&self) -> bool {
+        self.reconnecting.load(Ordering::Acquire)
+    }
+    pub fn reconnect_attempt(&self) -> usize {
+        self.reconnect_attempt.load(Ordering::Acquire)
+    }
+    pub fn is_receiver_active(&self) -> bool {
+        self.receiver_active.load(Ordering::Acquire)
+    }
+
+    /// Subscribe to unsolicited (push) messages from the gateway.
+    ///
+    /// Returns a [`broadcast::Receiver`] that receives every inbound message
+    /// that is *not* a response to a pending `send_message` call (i.e. actor
+    /// requests initiated by a remote peer).  Multiple subscribers are
+    /// supported; each gets its own independent copy.
+    ///
+    /// This requires the background receiver to be running
+    /// (`enable_concurrent_mode: true` or manual `start_receiver()` call).
+    pub fn subscribe_incoming(&self) -> broadcast::Receiver<Arc<Message>> {
+        self.incoming_tx.subscribe()
+    }
 
     pub async fn close(&self) -> Result<(), GatewayDError> {
         self.stop_receiver();
@@ -288,13 +363,20 @@ impl Client {
 
     /// Start the background receiver task.
     pub fn start_receiver(self: &Arc<Self>) {
-        if self.receiver_active.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        if self
+            .receiver_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
             return; // already running
         }
         let (tx, _) = tokio::sync::broadcast::channel::<()>(1);
         let rx = tx.subscribe();
         {
-            let mut guard = self.receiver_shutdown.lock().expect("receiver_shutdown poisoned");
+            let mut guard = self
+                .receiver_shutdown
+                .lock()
+                .expect("receiver_shutdown poisoned");
             *guard = Some(tx);
         }
         let weak = Arc::downgrade(self);
@@ -308,10 +390,15 @@ impl Client {
     /// Stop the background receiver task.
     pub fn stop_receiver(&self) {
         let tx = {
-            let mut guard = self.receiver_shutdown.lock().expect("receiver_shutdown poisoned");
+            let mut guard = self
+                .receiver_shutdown
+                .lock()
+                .expect("receiver_shutdown poisoned");
             guard.take()
         };
-        if let Some(tx) = tx { let _ = tx.send(()); }
+        if let Some(tx) = tx {
+            let _ = tx.send(());
+        }
         self.pending.clear();
         self.pending_raw.clear();
         self.receiver_active.store(false, Ordering::Release);
@@ -356,10 +443,13 @@ impl Client {
         self.pending.insert(id.clone(), tx);
 
         let encoded = match encode_message(msg, "") {
-            Ok(e)  => e,
+            Ok(e) => e,
             Err(e) => {
                 self.pending.remove(&id);
-                return Err(GatewayDError::new(ErrCode::ClientSendFailed, format!("encode: {e}")));
+                return Err(GatewayDError::new(
+                    ErrCode::ClientSendFailed,
+                    format!("encode: {e}"),
+                ));
             }
         };
         if let Err(e) = self.conn.send(encoded.as_bytes()).await {
@@ -369,20 +459,31 @@ impl Client {
 
         tokio::time::timeout(self.cfg.response_timeout, rx)
             .await
-            .map_err(|_| { self.pending.remove(&id); GatewayDError::new(ErrCode::GatewayTimeout, "response timeout") })?
-            .map_err(|_| GatewayDError::new(ErrCode::GatewayDisconnected, "response channel dropped"))?
+            .map_err(|_| {
+                self.pending.remove(&id);
+                GatewayDError::new(ErrCode::GatewayTimeout, "response timeout")
+            })?
+            .map_err(|_| {
+                GatewayDError::new(ErrCode::GatewayDisconnected, "response channel dropped")
+            })?
     }
 
-    async fn send_concurrent_raw(&self, msg: &Message) -> Result<(Arc<Message>, Vec<u8>), GatewayDError> {
+    async fn send_concurrent_raw(
+        &self,
+        msg: &Message,
+    ) -> Result<(Arc<Message>, Vec<u8>), GatewayDError> {
         let id = msg.envelope.message_id.clone();
         let (tx, rx) = oneshot::channel::<Result<(Arc<Message>, Vec<u8>), GatewayDError>>();
         self.pending_raw.insert(id.clone(), tx);
 
         let encoded = match encode_message(msg, "") {
-            Ok(e)  => e,
+            Ok(e) => e,
             Err(e) => {
                 self.pending_raw.remove(&id);
-                return Err(GatewayDError::new(ErrCode::ClientSendFailed, format!("encode: {e}")));
+                return Err(GatewayDError::new(
+                    ErrCode::ClientSendFailed,
+                    format!("encode: {e}"),
+                ));
             }
         };
         if let Err(e) = self.conn.send(encoded.as_bytes()).await {
@@ -392,16 +493,18 @@ impl Client {
 
         tokio::time::timeout(self.cfg.response_timeout, rx)
             .await
-            .map_err(|_| { self.pending_raw.remove(&id); GatewayDError::new(ErrCode::GatewayTimeout, "response timeout") })?
-            .map_err(|_| GatewayDError::new(ErrCode::GatewayDisconnected, "response channel dropped"))?
+            .map_err(|_| {
+                self.pending_raw.remove(&id);
+                GatewayDError::new(ErrCode::GatewayTimeout, "response timeout")
+            })?
+            .map_err(|_| {
+                GatewayDError::new(ErrCode::GatewayDisconnected, "response channel dropped")
+            })?
     }
 
     // ── Receiver loop ─────────────────────────────────────────────────────────
 
-    async fn receive_loop(
-        self: &Arc<Self>,
-        mut shutdown: tokio::sync::broadcast::Receiver<()>,
-    ) {
+    async fn receive_loop(self: &Arc<Self>, mut shutdown: tokio::sync::broadcast::Receiver<()>) {
         loop {
             let raw = tokio::select! {
                 _ = shutdown.recv() => break,
@@ -412,36 +515,44 @@ impl Client {
                 Err(ref e) if is_timeout_error(&e.message) => continue,
 
                 Err(ref e) if is_connection_error(&e.message) => {
-                    self.logger.warn("connection lost in receiver", &[("error", &e.message)]);
+                    self.logger
+                        .warn("connection lost in receiver", &[("error", &e.message)]);
                     self.pending.clear();
                     self.pending_raw.clear();
                     if self.cfg.reconnect_config.is_enabled() {
                         let arc = self.clone();
-                        tokio::spawn(async move { arc.attempt_reconnection().await; });
+                        tokio::spawn(async move {
+                            arc.attempt_reconnection().await;
+                        });
                     }
                     break;
                 }
 
                 Err(ref e) => {
-                    self.logger.error("receive error (non-fatal)", &[("error", &e.message)]);
+                    self.logger
+                        .error("receive error (non-fatal)", &[("error", &e.message)]);
                     continue;
                 }
 
                 Ok(raw) => {
                     match decode_message(&raw) {
                         Err(e) => {
-                            self.logger.error("decode error", &[("error", &e.to_string())]);
+                            self.logger
+                                .error("decode error", &[("error", &e.to_string())]);
                         }
                         Ok(msg) => {
-                            let msg_id  = msg.envelope.message_id.clone();
+                            let msg_id = msg.envelope.message_id.clone();
                             let arc_msg = Arc::new(msg);
 
                             if let Some((_, tx)) = self.pending.remove(&msg_id) {
                                 let _ = tx.send(Ok(arc_msg));
                             } else if let Some((_, tx)) = self.pending_raw.remove(&msg_id) {
                                 let _ = tx.send(Ok((arc_msg, raw)));
+                            } else {
+                                // Unsolicited push message — forward to subscribers.
+                                // Errors are ignored: no subscribers is fine.
+                                let _ = self.incoming_tx.send(arc_msg);
                             }
-                            // Unmatched push messages are silently dropped
                         }
                     }
                 }
@@ -453,10 +564,12 @@ impl Client {
     // ── Reconnection ──────────────────────────────────────────────────────────
 
     async fn attempt_reconnection(self: &Arc<Self>) {
-        if !self.cfg.reconnect_config.is_enabled() { return; }
+        if !self.cfg.reconnect_config.is_enabled() {
+            return;
+        }
         self.reconnecting.store(true, Ordering::Release);
 
-        let rc  = &self.cfg.reconnect_config;
+        let rc = &self.cfg.reconnect_config;
         let max = rc.max_retries;
         let mut delay_secs = rc.initial_backoff().as_secs_f64();
         let max_secs = rc.max_backoff().as_secs_f64();
@@ -464,7 +577,8 @@ impl Client {
 
         for attempt in 0.. {
             if max > 0 && attempt >= max {
-                self.logger.error("reconnection: max retries exhausted", &[("max", &max)]);
+                self.logger
+                    .error("reconnection: max retries exhausted", &[("max", &max)]);
                 break;
             }
             self.reconnect_attempt.store(attempt + 1, Ordering::Release);
@@ -472,21 +586,21 @@ impl Client {
             tokio::time::sleep(Duration::from_secs_f64(delay_secs)).await;
 
             match self.conn.reconnect().await {
-                Ok(()) => {
-                    match self.re_authenticate().await {
-                        Err(e) => {
-                            self.logger.error("re-authentication failed", &[("error", &e.message)]);
-                        }
-                        Ok(()) => {
-                            self.reconnecting.store(false, Ordering::Release);
-                            self.reconnect_attempt.store(0, Ordering::Release);
-                            self.start_receiver();
-                            return;
-                        }
+                Ok(()) => match self.re_authenticate().await {
+                    Err(e) => {
+                        self.logger
+                            .error("re-authentication failed", &[("error", &e.message)]);
                     }
-                }
+                    Ok(()) => {
+                        self.reconnecting.store(false, Ordering::Release);
+                        self.reconnect_attempt.store(0, Ordering::Release);
+                        self.start_receiver();
+                        return;
+                    }
+                },
                 Err(e) => {
-                    self.logger.warn("reconnect attempt failed", &[("error", &e.message)]);
+                    self.logger
+                        .warn("reconnect attempt failed", &[("error", &e.message)]);
                 }
             }
 

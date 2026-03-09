@@ -1,6 +1,7 @@
 /// Pattern discriminant for the Pod-OS search DSL.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PatternType {
+    #[default]
     FastPattern,
     QuestionMark,
     Asterisk,
@@ -36,56 +37,52 @@ pub enum PatternType {
 
 #[derive(Debug, Clone, Default)]
 pub struct Pattern {
-    pub r#type:     PatternType,
-    pub low_value:  String,
+    pub r#type: PatternType,
+    pub low_value: String,
     pub high_value: String,
-}
-
-impl Default for PatternType {
-    fn default() -> Self { PatternType::FastPattern }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct PatternMatch {
-    pub matched:    bool,
-    pub value:      String,
-    pub position:   i32,
+    pub matched: bool,
+    pub value: String,
+    pub position: i32,
     pub confidence: f64,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct PatternSearch {
-    pub patterns:       Vec<Pattern>,
-    pub operator:       String,
+    pub patterns: Vec<Pattern>,
+    pub operator: String,
     pub case_sensitive: bool,
-    pub whole_word:     bool,
+    pub whole_word: bool,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct FastPattern {
-    pub pattern:    String,
-    pub low_value:  String,
+    pub pattern: String,
+    pub low_value: String,
     pub high_value: String,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct CharSetPattern {
     pub characters: String,
-    pub range:      String,
-    pub inclusive:  bool,
+    pub range: String,
+    pub inclusive: bool,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct DistancePattern {
     pub comparison_string: String,
-    pub max_distance:      i32,
+    pub max_distance: i32,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct RangePattern {
-    pub low_value:  String,
+    pub low_value: String,
     pub high_value: String,
-    pub inclusive:  bool,
+    pub inclusive: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -110,9 +107,9 @@ pub struct SearchResults {
 
 #[derive(Debug, Clone, Default)]
 pub struct SearchResult {
-    pub total_event_hits:    i32,
+    pub total_event_hits: i32,
     pub returned_event_hits: i32,
-    pub set_link_count:      i32,
-    pub start_result:        String,
-    pub end_result:          String,
+    pub set_link_count: i32,
+    pub start_result: String,
+    pub end_result: String,
 }

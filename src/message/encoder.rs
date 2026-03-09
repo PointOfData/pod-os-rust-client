@@ -21,8 +21,7 @@ use crate::message::{
     header::construct_header,
     intents,
     types::{
-        BatchEventSpec, BatchLinkEventSpec, Message, PayloadData, SocketMessage, TagList,
-        TagValue,
+        BatchEventSpec, BatchLinkEventSpec, Message, PayloadData, SocketMessage, TagList, TagValue,
     },
 };
 
@@ -31,17 +30,21 @@ use crate::message::{
 /// `conversation_uuid` is set in the header for connection tracking; pass an
 /// empty string to omit it.
 pub fn encode_message(
-    msg:               &Message,
+    msg: &Message,
     conversation_uuid: &str,
 ) -> Result<SocketMessage, EncodeError> {
     // ── Address validation ───────────────────────────────────────────────────
     validate_address(&msg.envelope.to, "To", MsgErrCode::EncodeInvalidToAddress)?;
-    validate_address(&msg.envelope.from, "From", MsgErrCode::EncodeInvalidFromAddress)?;
+    validate_address(
+        &msg.envelope.from,
+        "From",
+        MsgErrCode::EncodeInvalidFromAddress,
+    )?;
 
     // ── Header ───────────────────────────────────────────────────────────────
-    let header  = construct_header(msg, &msg.envelope.intent.clone(), conversation_uuid);
-    let to      = msg.envelope.to.as_bytes();
-    let from    = msg.envelope.from.as_bytes();
+    let header = construct_header(msg, &msg.envelope.intent.clone(), conversation_uuid);
+    let to = msg.envelope.to.as_bytes();
+    let from = msg.envelope.from.as_bytes();
     let header_bytes = header.as_bytes();
 
     // ── Payload ──────────────────────────────────────────────────────────────
@@ -54,36 +57,43 @@ pub fn encode_message(
     if payload_bytes.len() as i64 > max {
         return Err(EncodeError::new(
             MsgErrCode::EncodePayloadTooLarge,
-            format!("payload {} bytes exceeds limit {} bytes", payload_bytes.len(), max),
+            format!(
+                "payload {} bytes exceeds limit {} bytes",
+                payload_bytes.len(),
+                max
+            ),
         ));
     }
 
     // total = 6 remaining 9-byte fields + to + from + header + payload
-    let content_len = 54
-        + to.len()
-        + from.len()
-        + header_bytes.len()
-        + payload_bytes.len();
+    let content_len = 54 + to.len() + from.len() + header_bytes.len() + payload_bytes.len();
 
     if content_len as i64 > max {
         return Err(EncodeError::new(
             MsgErrCode::EncodePayloadTooLarge,
-            format!("total message {} bytes exceeds limit {} bytes", content_len, max),
+            format!(
+                "total message {} bytes exceeds limit {} bytes",
+                content_len, max
+            ),
         ));
     }
 
     // ── Assemble wire frame ─────────────────────────────────────────────────
-    let msg_type  = msg.envelope.intent.message_type;
-    let data_type = msg.payload.as_ref().map(|p| p.data_type.as_wire_int()).unwrap_or(0);
+    let msg_type = msg.envelope.intent.message_type;
+    let data_type = msg
+        .payload
+        .as_ref()
+        .map(|p| p.data_type.as_wire_int())
+        .unwrap_or(0);
 
     let mut buf = Vec::with_capacity(9 + content_len);
-    write_hex_len(&mut buf, content_len);          // totalLength
-    write_hex_len(&mut buf, to.len());             // toLength
-    write_hex_len(&mut buf, from.len());           // fromLength
-    write_hex_len(&mut buf, header_bytes.len());   // headerLength
-    write_dec_9  (&mut buf, msg_type as u64);      // messageType  (decimal)
-    write_dec_9  (&mut buf, data_type as u64);     // dataType     (decimal)
-    write_hex_len(&mut buf, payload_bytes.len());  // payloadLength
+    write_hex_len(&mut buf, content_len); // totalLength
+    write_hex_len(&mut buf, to.len()); // toLength
+    write_hex_len(&mut buf, from.len()); // fromLength
+    write_hex_len(&mut buf, header_bytes.len()); // headerLength
+    write_dec_9(&mut buf, msg_type as u64); // messageType  (decimal)
+    write_dec_9(&mut buf, data_type as u64); // dataType     (decimal)
+    write_hex_len(&mut buf, payload_bytes.len()); // payloadLength
 
     buf.extend_from_slice(to);
     buf.extend_from_slice(from);
@@ -113,35 +123,49 @@ fn write_dec_9(buf: &mut Vec<u8>, n: u64) {
 
 fn validate_address(addr: &str, field: &str, code: MsgErrCode) -> Result<(), EncodeError> {
     if let Some(at) = addr.find('@') {
-        let name    = &addr[..at];
+        let name = &addr[..at];
         let gateway = &addr[at + 1..];
         if name.is_empty() {
-            return Err(EncodeError::new(code, format!("{field}: actor name is empty")).with_field(field));
+            return Err(
+                EncodeError::new(code, format!("{field}: actor name is empty")).with_field(field),
+            );
         }
         if gateway.is_empty() {
-            return Err(EncodeError::new(code, format!("{field}: gateway name is empty")).with_field(field));
+            return Err(
+                EncodeError::new(code, format!("{field}: gateway name is empty")).with_field(field),
+            );
         }
     } else {
-        return Err(EncodeError::new(code, format!("{field}: address missing '@': {addr}")).with_field(field));
+        return Err(
+            EncodeError::new(code, format!("{field}: address missing '@': {addr}"))
+                .with_field(field),
+        );
     }
     Ok(())
 }
 
 // ── Payload building ─────────────────────────────────────────────────────────
 
-fn build_payload(msg: &Message, intent: &crate::message::intents::Intent) -> Result<String, EncodeError> {
+fn build_payload(
+    msg: &Message,
+    intent: &crate::message::intents::Intent,
+) -> Result<String, EncodeError> {
     use intents::*;
     if *intent == GATEWAY_ID || *intent == GATEWAY_STREAM_ON {
         return Ok(String::new());
     }
     if *intent == STORE_BATCH_EVENTS {
-        let specs = msg.neural_memory.as_ref()
+        let specs = msg
+            .neural_memory
+            .as_ref()
             .map(|n| n.batch_events.as_slice())
             .unwrap_or(&[]);
         return Ok(format_batch_events_payload(specs));
     }
     if *intent == STORE_BATCH_LINKS {
-        let specs = msg.neural_memory.as_ref()
+        let specs = msg
+            .neural_memory
+            .as_ref()
             .map(|n| n.batch_links.as_slice())
             .unwrap_or(&[]);
         return Ok(format_batch_link_events_payload(specs));
@@ -158,10 +182,10 @@ fn build_payload(msg: &Message, intent: &crate::message::intents::Intent) -> Res
     // Default: stringify Payload.Data
     if let Some(payload) = &msg.payload {
         match &payload.data {
-            PayloadData::Text(s)   => return Ok(s.clone()),
+            PayloadData::Text(s) => return Ok(s.clone()),
             PayloadData::Binary(b) => return Ok(String::from_utf8_lossy(b).into_owned()),
             PayloadData::Lines(lines) => return Ok(lines.join("\n")),
-            PayloadData::Empty     => {}
+            PayloadData::Empty => {}
         }
     }
     Ok(String::new())
@@ -176,13 +200,21 @@ fn build_payload(msg: &Message, intent: &crate::message::intents::Intent) -> Res
 pub fn format_batch_events_payload(events: &[BatchEventSpec]) -> String {
     let mut out = String::new();
     for (i, spec) in events.iter().enumerate() {
-        if i > 0 { out.push('\n'); }
+        if i > 0 {
+            out.push('\n');
+        }
         let e = &spec.event;
         append_event_fields(&mut out, e);
         // Tags are 0-indexed in batch payloads (unlike header which is 1-indexed)
         for (ti, tag) in spec.tags.iter().enumerate() {
             out.push('\t');
-            out.push_str(&format!("tag_{}={}:{}={}", ti, tag.frequency, tag.key, serialize_tag_value(&tag.value)));
+            out.push_str(&format!(
+                "tag_{}={}:{}={}",
+                ti,
+                tag.frequency,
+                tag.key,
+                serialize_tag_value(&tag.value)
+            ));
         }
     }
     out
@@ -192,17 +224,35 @@ pub fn format_batch_events_payload(events: &[BatchEventSpec]) -> String {
 pub fn format_batch_link_events_payload(events: &[BatchLinkEventSpec]) -> String {
     let mut out = String::new();
     for (i, spec) in events.iter().enumerate() {
-        if i > 0 { out.push('\n'); }
+        if i > 0 {
+            out.push('\n');
+        }
         append_event_fields(&mut out, &spec.event);
         let l = &spec.link;
-        if !l.event_a.is_empty()    { push_field(&mut out, "event_id_a",  &l.event_a); }
-        if !l.unique_id_a.is_empty() { push_field(&mut out, "unique_id_a", &l.unique_id_a); }
-        if !l.event_b.is_empty()    { push_field(&mut out, "event_id_b",  &l.event_b); }
-        if !l.unique_id_b.is_empty() { push_field(&mut out, "unique_id_b", &l.unique_id_b); }
-        if l.strength_a != 0.0 { push_field(&mut out, "strength_a", &l.strength_a.to_string()); }
-        if l.strength_b != 0.0 { push_field(&mut out, "strength_b", &l.strength_b.to_string()); }
-        if !l.category.is_empty()   { push_field(&mut out, "category",    &l.category); }
-        if !l.r#type.is_empty()     { push_field(&mut out, "type",        &l.r#type); }
+        if !l.event_a.is_empty() {
+            push_field(&mut out, "event_id_a", &l.event_a);
+        }
+        if !l.unique_id_a.is_empty() {
+            push_field(&mut out, "unique_id_a", &l.unique_id_a);
+        }
+        if !l.event_b.is_empty() {
+            push_field(&mut out, "event_id_b", &l.event_b);
+        }
+        if !l.unique_id_b.is_empty() {
+            push_field(&mut out, "unique_id_b", &l.unique_id_b);
+        }
+        if l.strength_a != 0.0 {
+            push_field(&mut out, "strength_a", &l.strength_a.to_string());
+        }
+        if l.strength_b != 0.0 {
+            push_field(&mut out, "strength_b", &l.strength_b.to_string());
+        }
+        if !l.category.is_empty() {
+            push_field(&mut out, "category", &l.category);
+        }
+        if !l.r#type.is_empty() {
+            push_field(&mut out, "type", &l.r#type);
+        }
     }
     out
 }
@@ -210,19 +260,21 @@ pub fn format_batch_link_events_payload(events: &[BatchLinkEventSpec]) -> String
 fn append_event_fields(out: &mut String, e: &crate::message::types::EventFields) {
     let fields: &[(&str, &str)] = &[
         ("unique_id", &e.unique_id),
-        ("event_id",  &e.id),
-        ("local_id",  &e.local_id),
-        ("owner",     &e.owner),
+        ("event_id", &e.id),
+        ("local_id", &e.local_id),
+        ("owner", &e.owner),
         ("timestamp", &e.timestamp),
-        ("type",      &e.r#type),
-        ("loc",       &e.location),
+        ("type", &e.r#type),
+        ("loc", &e.location),
         ("loc_delim", &e.location_separator),
-        ("mime",      &e.payload_data.mime_type),
+        ("mime", &e.payload_data.mime_type),
     ];
     let mut first = true;
     for (key, val) in fields {
         if !val.is_empty() {
-            if !first { out.push('\t'); }
+            if !first {
+                out.push('\t');
+            }
             first = false;
             out.push_str(key);
             out.push('=');
@@ -241,7 +293,14 @@ fn push_field(out: &mut String, key: &str, val: &str) {
 /// Format tags as newline-separated `freq=key=value` lines.
 pub fn format_batch_tags_payload(tags: &TagList) -> String {
     tags.iter()
-        .map(|t| format!("{}={}={}", t.frequency, t.key, serialize_tag_value(&t.value)))
+        .map(|t| {
+            format!(
+                "{}={}={}",
+                t.frequency,
+                t.key,
+                serialize_tag_value(&t.value)
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -249,11 +308,11 @@ pub fn format_batch_tags_payload(tags: &TagList) -> String {
 /// Serialize a tag value to a wire-safe string.
 pub fn serialize_tag_value(value: &TagValue) -> String {
     match value {
-        TagValue::Text(s)  => s.clone(),
-        TagValue::Int(n)   => n.to_string(),
+        TagValue::Text(s) => s.clone(),
+        TagValue::Int(n) => n.to_string(),
         TagValue::Float(f) => f.to_string(),
-        TagValue::Bool(b)  => b.to_string(),
-        TagValue::Json(j)  => j.to_string(),
+        TagValue::Bool(b) => b.to_string(),
+        TagValue::Json(j) => j.to_string(),
     }
 }
 
@@ -269,8 +328,8 @@ mod tests {
     fn minimal_msg(intent: &'static intents::Intent) -> Message {
         Message {
             envelope: Envelope {
-                to:     "actor@gateway.local".to_string(),
-                from:   "client@gateway.local".to_string(),
+                to: "actor@gateway.local".to_string(),
+                from: "client@gateway.local".to_string(),
                 intent: intent.clone(),
                 ..Default::default()
             },
@@ -281,8 +340,8 @@ mod tests {
     #[test]
     fn encode_gateway_id_has_correct_prefix() {
         let msg = minimal_msg(&intents::GATEWAY_ID);
-        let sm  = encode_message(&msg, "test-uuid").unwrap();
-        let s   = std::str::from_utf8(sm.as_bytes()).unwrap();
+        let sm = encode_message(&msg, "test-uuid").unwrap();
+        let s = std::str::from_utf8(sm.as_bytes()).unwrap();
         assert!(s.starts_with('x'), "total length must start with 'x'");
     }
 
