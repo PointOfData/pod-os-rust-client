@@ -28,6 +28,9 @@ pub fn construct_header(msg: &Message, intent: &Intent, _connection_id_uuid: &st
     if *intent == STORE_EVENT {
         return store_event_message_header(msg);
     }
+    if *intent == STORE_DATA {
+        return store_data_message_header(msg);
+    }
     if *intent == STORE_BATCH_EVENTS {
         return store_batch_events_message_header(msg);
     }
@@ -107,6 +110,32 @@ fn store_event_message_header(msg: &Message) -> String {
             let val = format!("{}:{}={}", tag.frequency, tag.key, tag.value);
             h.add(&key, &val);
         }
+    }
+    h.add_if_nonempty("_msg_id", &msg.envelope.message_id);
+    h.build()
+}
+
+fn store_data_message_header(msg: &Message) -> String {
+    let mut h = Header::new();
+    h.add("_db_cmd", "store_data");
+
+    if let Some(event) = &msg.event {
+        if !event.unique_id.is_empty() {
+            h.add("unique_id", &event.unique_id);
+        } else if !event.id.is_empty() {
+            h.add("event_id", &event.id);
+        }
+        h.add_if_nonempty("timestamp", &event.timestamp);
+        let loc_sep = if event.location_separator.is_empty() {
+            "|"
+        } else {
+            &event.location_separator
+        };
+        h.add_if_nonempty("loc_delim", loc_sep);
+        h.add_if_nonempty("loc", &event.location);
+    }
+    if let Some(payload) = &msg.payload {
+        h.add_if_nonempty("mime", &payload.mime_type);
     }
     h.add_if_nonempty("_msg_id", &msg.envelope.message_id);
     h.build()

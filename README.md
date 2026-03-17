@@ -111,6 +111,7 @@ use pod_os_client::message::intents;
 
 // NeuralMemory operations (messageType 1000 → request, 1001 → response)
 intents::STORE_EVENT           // _db_cmd=store
+intents::STORE_DATA            // _db_cmd=store_data  (raw payload; no tags)
 intents::STORE_BATCH_EVENTS    // _db_cmd=store_batch
 intents::STORE_BATCH_TAGS      // _db_cmd=tag_store_batch
 intents::GET_EVENT             // _db_cmd=get
@@ -250,6 +251,7 @@ Designed to sustain **100 K+ messages per second** in concurrent mode:
 | `message.EncodeMessage()` | `message::encode_message()` |
 | `message.DecodeMessage()` | `message::decode_message()` |
 | `message.IntentType.StoreEvent` | `message::intents::STORE_EVENT` |
+| `message.IntentType.StoreData` | `message::intents::STORE_DATA` |
 | `message.GetTimestamp()` | `message::get_timestamp()` |
 | `message.Validate()` | `msg.validate()` |
 | `errors.GatewayDError` | `errors::GatewayDError` |

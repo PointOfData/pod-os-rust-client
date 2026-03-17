@@ -32,6 +32,7 @@ impl Intent {
 // ── All known intents ────────────────────────────────────────────────────────
 
 pub static STORE_EVENT: Intent = Intent::new("StoreEvent", "MEM_REQ", "store", 1000);
+pub static STORE_DATA: Intent = Intent::new("StoreData", "MEM_REQ", "store_data", 1000);
 pub static STORE_BATCH_EVENTS: Intent =
     Intent::new("StoreBatchEvents", "MEM_REQ", "store_batch", 1000);
 pub static STORE_BATCH_TAGS: Intent =
@@ -46,6 +47,8 @@ pub static STORE_BATCH_LINKS: Intent =
 
 pub static STORE_EVENT_RESPONSE: Intent =
     Intent::new("StoreEventResponse", "MEM_REPLY", "store", 1001);
+pub static STORE_DATA_RESPONSE: Intent =
+    Intent::new("StoreDataResponse", "MEM_REPLY", "store_data", 1001);
 pub static STORE_BATCH_EVENTS_RESPONSE: Intent =
     Intent::new("StoreBatchEventsResponse", "MEM_REPLY", "store_batch", 1001);
 pub static STORE_BATCH_TAGS_RESPONSE: Intent = Intent::new(
@@ -136,6 +139,7 @@ static BY_COMMAND: Lazy<HashMap<&'static str, &'static Intent>> = Lazy::new(|| {
 
 const ALL_INTENTS: &[&Intent] = &[
     &STORE_EVENT,
+    &STORE_DATA,
     &STORE_BATCH_EVENTS,
     &STORE_BATCH_TAGS,
     &GET_EVENT,
@@ -144,6 +148,7 @@ const ALL_INTENTS: &[&Intent] = &[
     &UNLINK_EVENT,
     &STORE_BATCH_LINKS,
     &STORE_EVENT_RESPONSE,
+    &STORE_DATA_RESPONSE,
     &STORE_BATCH_EVENTS_RESPONSE,
     &STORE_BATCH_TAGS_RESPONSE,
     &GET_EVENT_RESPONSE,
