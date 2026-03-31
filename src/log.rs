@@ -17,7 +17,8 @@ impl From<u8> for Level {
             1 => Level::Error,
             2 => Level::Warn,
             3 => Level::Info,
-            _ => Level::Debug,
+            4 => Level::Debug,
+            _ => Level::Disabled,
         }
     }
 }

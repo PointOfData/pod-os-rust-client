@@ -10,17 +10,20 @@ const UNIX_NETWORKS: &[&str] = &["unix", "unixgram", "unixpacket"];
 /// Resolve and validate a `(network, address)` pair.
 ///
 /// Returns the canonical `host:port` string (TCP/UDP) or socket path (Unix).
-/// Panics on unsupported networks — matching Go behaviour.
+/// Returns `Err` with `ErrCode::InvalidNetwork` for unsupported network families.
 pub fn resolve(network: &str, address: &str) -> Result<String, GatewayDError> {
     if TCP_NETWORKS.contains(&network) || UDP_NETWORKS.contains(&network) {
         resolve_tcp_udp(address)
     } else if UNIX_NETWORKS.contains(&network) {
         Ok(address.to_string())
     } else {
-        panic!(
-            "pod-os-client: unsupported network '{}' — expected tcp/udp/unix",
-            network
-        );
+        Err(GatewayDError::new(
+            ErrCode::InvalidNetwork,
+            format!(
+                "unsupported network '{}' — expected tcp/udp/unix",
+                network
+            ),
+        ))
     }
 }
 

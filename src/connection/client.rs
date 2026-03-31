@@ -102,6 +102,16 @@ impl Client {
         retry: Arc<Retry>,
         cfg: ClientConfig,
     ) -> Result<Arc<Self>, GatewayDError> {
+        const SUPPORTED_TCP: &[&str] = &["tcp", "tcp4", "tcp6"];
+        if !SUPPORTED_TCP.contains(&network) {
+            return Err(GatewayDError::new(
+                ErrCode::InvalidNetwork,
+                format!(
+                    "unsupported network '{}': only TCP (tcp/tcp4/tcp6) is implemented",
+                    network
+                ),
+            ));
+        }
         let addr = resolver::make_addr(host, port);
         let dial_timeout = cfg.dial_timeout;
         let logger = cfg.logger.clone();
@@ -244,6 +254,16 @@ impl Client {
             return Err(GatewayDError::new(
                 ErrCode::ClientReceiveFailed,
                 "declared totalLength < 9",
+            ));
+        }
+        let max_size = crate::message::constants::max_message_size() as usize;
+        if total_len > max_size {
+            return Err(GatewayDError::new(
+                ErrCode::ClientReceiveFailed,
+                format!(
+                    "declared totalLength {} exceeds max message size {}",
+                    total_len, max_size
+                ),
             ));
         }
         let body_len = total_len - LEN_PREFIX_BYTES;

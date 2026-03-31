@@ -44,7 +44,10 @@ impl WireHook for NoOpWireHook {
 
 // ── IClient ──────────────────────────────────────────────────────────────────
 
-/// Abstraction over `connection::Client`, allowing mocks in tests.
+/// Abstraction over `connection::Client`, allowing mocks in unit tests.
+///
+/// **Note**: The production `Client` wraps `connection::Client` directly,
+/// not `Arc<dyn IClient>`.  This trait exists solely for test doubles.
 #[async_trait::async_trait]
 pub trait IClient: Send + Sync {
     async fn send(&self, data: &[u8]) -> Result<(), crate::errors::GatewayDError>;

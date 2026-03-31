@@ -56,7 +56,10 @@ static ACTOR_REGISTRY: Lazy<RwLock<std::collections::HashMap<String, Arc<Client>
     Lazy::new(|| RwLock::new(std::collections::HashMap::new()));
 
 pub async fn get_client_by_gateway_actor_name(actor_name: &str) -> Option<Arc<Client>> {
-    ACTOR_REGISTRY.read().await.get(actor_name).cloned()
+    let reg = ACTOR_REGISTRY.read().await;
+    reg.values()
+        .find(|c| c.gateway_actor_name == actor_name)
+        .cloned()
 }
 
 pub async fn get_client_count() -> usize {
@@ -65,16 +68,25 @@ pub async fn get_client_count() -> usize {
 
 pub async fn remove_client_by_gateway_actor_name(actor_name: &str) {
     let mut actor_reg = ACTOR_REGISTRY.write().await;
-    if let Some(c) = actor_reg.remove(actor_name) {
-        CLIENT_REGISTRY.write().await.remove(&c.key);
+    let keys_to_remove: Vec<String> = actor_reg
+        .iter()
+        .filter(|(_, c)| c.gateway_actor_name == actor_name)
+        .map(|(k, _)| k.clone())
+        .collect();
+    for key in &keys_to_remove {
+        actor_reg.remove(key);
+    }
+    drop(actor_reg);
+    let mut client_reg = CLIENT_REGISTRY.write().await;
+    for key in &keys_to_remove {
+        client_reg.remove(key);
     }
 }
 
 async fn register_client(client: Arc<Client>) -> Result<(), GatewayDError> {
     let key = client.key.clone();
-    let actor = client.cfg.gateway_actor_name.clone();
-    CLIENT_REGISTRY.write().await.insert(key, client.clone());
-    ACTOR_REGISTRY.write().await.insert(actor, client);
+    CLIENT_REGISTRY.write().await.insert(key.clone(), client.clone());
+    ACTOR_REGISTRY.write().await.insert(key, client);
     Ok(())
 }
 
@@ -136,12 +148,27 @@ impl Client {
             ));
         }
 
+        if cfg.host.is_empty() {
+            return Err(GatewayDError::new(
+                ErrCode::InvalidConfig,
+                "Host must not be empty",
+            ));
+        }
+        if cfg.port.is_empty() {
+            return Err(GatewayDError::new(
+                ErrCode::InvalidConfig,
+                "Port must not be empty",
+            ));
+        }
+
         let key = format!("{}:{}", cfg.client_name, cfg.gateway_actor_name);
-        // Return existing connected client from registry
+        // Return existing connected client, or remove stale disconnected entry
         if let Some(existing) = CLIENT_REGISTRY.read().await.get(&key).cloned() {
             if existing.is_connected() {
                 return Ok(existing);
             }
+            CLIENT_REGISTRY.write().await.remove(&key);
+            ACTOR_REGISTRY.write().await.remove(&key);
         }
 
         let logger: Arc<dyn Logger> = cfg.logger.clone().unwrap_or_else(|| {
@@ -346,6 +373,11 @@ impl Client {
     /// requests initiated by a remote peer).  Multiple subscribers are
     /// supported; each gets its own independent copy.
     ///
+    /// **Note on timed-out requests:** When `send_concurrent` times out,
+    /// the pending entry is removed.  If the gateway replies *after* the
+    /// timeout, the response will arrive here as an unsolicited message.
+    /// Subscribers should be prepared for this.
+    ///
     /// This requires the background receiver to be running
     /// (`enable_concurrent_mode: true` or manual `start_receiver()` call).
     pub fn subscribe_incoming(&self) -> broadcast::Receiver<Arc<Message>> {
@@ -379,11 +411,9 @@ impl Client {
                 .expect("receiver_shutdown poisoned");
             *guard = Some(tx);
         }
-        let weak = Arc::downgrade(self);
+        let this = self.clone();
         tokio::spawn(async move {
-            if let Some(client) = weak.upgrade() {
-                client.receive_loop(rx).await;
-            }
+            this.receive_loop(rx).await;
         });
     }
 
@@ -464,7 +494,10 @@ impl Client {
                 GatewayDError::new(ErrCode::GatewayTimeout, "response timeout")
             })?
             .map_err(|_| {
-                GatewayDError::new(ErrCode::GatewayDisconnected, "response channel dropped")
+                GatewayDError::new(
+                    ErrCode::GatewayDisconnected,
+                    "response channel closed: sender dropped (connection lost or receiver stopped)",
+                )
             })?
     }
 
@@ -498,7 +531,10 @@ impl Client {
                 GatewayDError::new(ErrCode::GatewayTimeout, "response timeout")
             })?
             .map_err(|_| {
-                GatewayDError::new(ErrCode::GatewayDisconnected, "response channel dropped")
+                GatewayDError::new(
+                    ErrCode::GatewayDisconnected,
+                    "response channel closed: sender dropped (connection lost or receiver stopped)",
+                )
             })?
     }
 
@@ -512,9 +548,9 @@ impl Client {
             };
 
             match raw {
-                Err(ref e) if is_timeout_error(&e.message) => continue,
+                Err(ref e) if e.is_timeout() || is_timeout_error(&e.message) => continue,
 
-                Err(ref e) if is_connection_error(&e.message) => {
+                Err(ref e) if e.is_io_connection_error() || is_connection_error(&e.message) => {
                     self.logger
                         .warn("connection lost in receiver", &[("error", &e.message)]);
                     self.pending.clear();
@@ -634,4 +670,5 @@ pub fn is_connection_error(s: &str) -> bool {
         || lo.contains("connection closed")
         || lo.contains("use of closed network")
         || lo.contains("forcibly closed")
+        || lo.contains("connection aborted")
 }

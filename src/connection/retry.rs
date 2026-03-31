@@ -3,8 +3,7 @@
 use crate::errors::{ErrCode, GatewayDError};
 use std::time::Duration;
 
-/// Hard caps (when `disable_backoff_caps` is false).
-pub const BACKOFF_MULTIPLIER_CAP: f64 = 10.0;
+/// Hard cap on backoff duration (when `disable_backoff_caps` is false).
 pub const BACKOFF_DURATION_CAP: Duration = Duration::from_secs(60);
 
 /// Retry configuration and executor.

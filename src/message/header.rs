@@ -1,9 +1,6 @@
 //! Per-intent header builders.
 //!
-//! The header is a tab-separated sequence of `key=value` pairs.  Most
-//! `key=value` pairs are built by the hand-written functions below; the
-//! `mapping.rs` (HeaderBuilder) reflection-based approach is kept as an
-//! alternative for GetEvent / GetEventsForTags.
+//! The header is a tab-separated sequence of `key=value` pairs.
 
 use crate::message::{
     intents::{self, Intent},
@@ -92,6 +89,7 @@ fn store_event_message_header(msg: &Message) -> String {
         h.add_if_nonempty("unique_id", &event.unique_id);
         h.add_if_nonempty("event_id", &event.id);
         h.add_if_nonempty("owner", &event.owner);
+        h.add_if_nonempty("owner_unique_id", &event.owner_unique_id);
         h.add_if_nonempty("timestamp", &event.timestamp);
         let loc_sep = if event.location_separator.is_empty() {
             "|"
@@ -213,9 +211,19 @@ fn get_events_for_tags_message_header(msg: &Message) -> String {
     let mut h = Header::new();
     h.add("_db_cmd", "events_for_tag");
 
-    if let Some(opts) = msg.get_events_for_tags_opts() {
-        h.add_if_nonempty("event_pattern", &opts.event_pattern);
-        h.add_if_nonempty("event_pattern_high", &opts.event_pattern_high);
+    let opts = msg.get_events_for_tags_opts();
+    let opts = opts.as_ref();
+    {
+        let default_opts;
+        let opts = match opts {
+            Some(o) => o,
+            None => {
+                default_opts = crate::message::types::GetEventsForTagsOptions::default();
+                &default_opts
+            }
+        };
+        h.add_if_nonempty("event", &opts.event_pattern);
+        h.add_if_nonempty("event_high", &opts.event_pattern_high);
         h.add(
             "buffer_results",
             if opts.buffer_results { "Y" } else { "N" },
@@ -242,7 +250,7 @@ fn get_events_for_tags_message_header(msg: &Message) -> String {
             h.add("get_target_tags", "Y");
         }
         if opts.get_event_object_count {
-            h.add("get_event_object_count", "Y");
+            h.add("get_eo_count", "Y");
         }
         if opts.include_tag_stats {
             h.add("include_tag_stats", "Y");
@@ -268,8 +276,8 @@ fn get_events_for_tags_message_header(msg: &Message) -> String {
         if opts.min_event_hits != 0 {
             h.add("min_event_hits", &opts.min_event_hits.to_string());
         }
-        h.add_if_nonempty("link_tag_filter", &opts.link_tag_filter);
-        h.add_if_nonempty("linked_events_filter", &opts.linked_events_filter);
+        h.add_if_nonempty("link_tag_pattern", &opts.link_tag_filter);
+        h.add_if_nonempty("linked_events_tag_filter", &opts.linked_events_filter);
         h.add_if_nonempty("link_category", &opts.link_category);
         h.add_if_nonempty("owner", &opts.owner);
         h.add_if_nonempty("owner_unique_id", &opts.owner_unique_id);
@@ -293,7 +301,7 @@ fn link_events_message_header(msg: &Message) -> String {
 
     if let Some(link) = msg.link() {
         h.add_if_nonempty("event_id", &link.id);
-        h.add_if_nonempty("owner", &link.owner);
+        h.add_if_nonempty("unique_id", &link.unique_id);
         // Use event_id_a/b or unique_id_a/b
         if !link.event_a.is_empty() {
             h.add("event_id_a", &link.event_a);
@@ -337,20 +345,20 @@ fn unlink_events_message_header(msg: &Message) -> String {
     h.add("_db_cmd", "unlink");
 
     if let Some(link) = msg.link() {
-        h.add_if_nonempty("owner", &link.owner);
         if !link.id.is_empty() {
             h.add("event_id", &link.id);
         } else {
             h.add_if_nonempty("unique_id", &link.unique_id);
         }
-        let loc_sep = if link.location_separator.is_empty() {
-            "|"
-        } else {
-            &link.location_separator
-        };
-        h.add_if_nonempty("loc_delim", loc_sep);
-        h.add_if_nonempty("loc", &link.location);
-        h.add_if_nonempty("timestamp", &link.timestamp);
+        if !link.location.is_empty() {
+            h.add("loc", &link.location);
+            let loc_sep = if link.location_separator.is_empty() {
+                "|"
+            } else {
+                &link.location_separator
+            };
+            h.add("loc_delim", loc_sep);
+        }
     }
     h.add_if_nonempty("_msg_id", &msg.envelope.message_id);
     h.build()

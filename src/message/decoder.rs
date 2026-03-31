@@ -95,7 +95,15 @@ pub fn decode_message(raw: &[u8]) -> Result<Message, DecodeError> {
 
     let intent = intents::intent_from_message_type_and_command(msg_type, command)
         .cloned()
-        .unwrap_or_default();
+        .ok_or_else(|| {
+            DecodeError::new(
+                MsgErrCode::DecodeUnknownIntent,
+                format!(
+                    "unknown intent: message_type={}, command='{}'",
+                    msg_type, command
+                ),
+            )
+        })?;
 
     // ── Build message ─────────────────────────────────────────────────────────
     let message_id = header_map.get("_msg_id").cloned().unwrap_or_default();
@@ -272,7 +280,6 @@ fn decode_event_field(key: &str, val: &str, event: &mut EventFields) {
 fn parse_get_events_for_tags_payload(msg: &mut Message, payload: &str) {
     let mut events: Vec<EventFields> = Vec::new();
     let mut brief_hits: Vec<BriefHitRecord> = Vec::new();
-    let mut event_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
     let mut event_links: HashMap<String, Vec<LinkFields>> = HashMap::new();
     let mut link_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
     let mut target_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
@@ -319,9 +326,6 @@ fn parse_get_events_for_tags_payload(msg: &mut Message, payload: &str) {
 
     // Assembly: attach tags and links to events
     for event in &mut events {
-        if let Some(tags) = event_tags.remove(&event.id) {
-            event.tags = tags;
-        }
         if let Some(links) = event_links.remove(&event.id) {
             for mut link in links {
                 if let Some(lt) = link_tags.remove(&link.id) {
@@ -620,6 +624,18 @@ pub fn replace_from_in_raw_message(raw: &[u8], new_from: &str) -> Result<Vec<u8>
     let new_from_bytes = new_from.as_bytes();
     let new_from_len = new_from_bytes.len();
     let new_total = 54 + old_to_len + new_from_len + header_len + payload_len;
+
+    let max = max_message_size();
+    if (9 + new_total) as i64 > max {
+        return Err(DecodeError::new(
+            MsgErrCode::DecodePayloadTooLarge,
+            format!(
+                "reconstructed message {} bytes exceeds limit {} bytes",
+                9 + new_total,
+                max
+            ),
+        ));
+    }
 
     let mut out = Vec::with_capacity(9 + new_total);
 

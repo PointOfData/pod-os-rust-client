@@ -42,7 +42,7 @@ pub fn encode_message(
     )?;
 
     // ── Header ───────────────────────────────────────────────────────────────
-    let header = construct_header(msg, &msg.envelope.intent.clone(), conversation_uuid);
+    let header = construct_header(msg, &msg.envelope.intent, conversation_uuid);
     let to = msg.envelope.to.as_bytes();
     let from = msg.envelope.from.as_bytes();
     let header_bytes = header.as_bytes();

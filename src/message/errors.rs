@@ -11,6 +11,7 @@ pub enum MsgErrCode {
     DecodeInvalidDataType = 1004,
     DecodePayloadTooLarge = 1005,
     DecodeHeaderTransformFailed = 1006,
+    DecodeUnknownIntent = 1015,
     // Encode errors (1007+)
     EncodeNilMessage = 1007,
     EncodePayloadTooLarge = 1008,

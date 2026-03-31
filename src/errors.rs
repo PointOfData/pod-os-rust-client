@@ -97,4 +97,31 @@ impl GatewayDError {
         self.source = Some(Box::new(err));
         self
     }
+
+    /// Check if the underlying source is a timeout I/O error.
+    pub fn is_timeout(&self) -> bool {
+        if let Some(source) = &self.source {
+            if let Some(io_err) = source.downcast_ref::<std::io::Error>() {
+                return io_err.kind() == std::io::ErrorKind::TimedOut;
+            }
+        }
+        false
+    }
+
+    /// Check if the underlying source is a connection-class I/O error.
+    pub fn is_io_connection_error(&self) -> bool {
+        if let Some(source) = &self.source {
+            if let Some(io_err) = source.downcast_ref::<std::io::Error>() {
+                return matches!(
+                    io_err.kind(),
+                    std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionRefused
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::UnexpectedEof
+                );
+            }
+        }
+        false
+    }
 }

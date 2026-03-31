@@ -105,9 +105,14 @@ impl ChannelPool {
         })
     }
 
-    /// Number of idle connections in the pool.
-    pub fn idle_count(&self) -> usize {
+    /// Number of connections currently checked out (in use).
+    pub fn in_use_count(&self) -> usize {
         self.max_cap - self.semaphore.available_permits()
+    }
+
+    /// Number of available permits (idle capacity, not idle connections).
+    pub fn available_permits(&self) -> usize {
+        self.semaphore.available_permits()
     }
 
     /// Close all idle connections by draining the channel.

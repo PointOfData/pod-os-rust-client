@@ -35,8 +35,12 @@ impl DataType {
     pub fn as_wire_int(self) -> i32 {
         self as i32
     }
-    pub fn from_wire_int(_v: i32) -> Self {
-        DataType::Raw
+    /// Only `Raw = 0` is currently supported; any other value is an error.
+    pub fn from_wire_int(v: i32) -> Result<Self, String> {
+        match v {
+            0 => Ok(DataType::Raw),
+            other => Err(format!("unsupported DataType wire value: {}", other)),
+        }
     }
 }
 
@@ -115,6 +119,8 @@ pub struct Tag {
     pub value: TagValue,
     pub timestamp: String,
     pub id: String,
+    pub owner: String,
+    pub owner_unique_id: String,
 }
 
 /// Ordered list of tags.

@@ -159,6 +159,7 @@ const ALL_INTENTS: &[&Intent] = &[
     &ACTOR_ECHO,
     &ACTOR_START,
     &STATUS,
+    &GATEWAY_STATUS,
     &ACTOR_REQUEST,
     &ACTOR_RESPONSE,
     &GATEWAY_ID,
