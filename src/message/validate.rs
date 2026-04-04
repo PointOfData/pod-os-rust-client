@@ -1291,7 +1291,7 @@ fn validate_wire_header_fields(msg: &Message, raw: &[u8], errs: &mut ValidationE
                         "",
                     );
                 }
-                for field in &["category"] {
+                for field in &["category", "strength_a", "strength_b"] {
                     if !hm.contains_key(*field) {
                         push_err(
                             errs,
