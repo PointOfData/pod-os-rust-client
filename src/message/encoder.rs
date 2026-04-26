@@ -65,15 +65,17 @@ pub fn encode_message(
         ));
     }
 
-    // total = 6 remaining 9-byte fields + to + from + header + payload
-    let content_len = 54 + to.len() + from.len() + header_bytes.len() + payload_bytes.len();
+    // All 7 nine-byte fields (63 bytes) + variable-length content.
+    // totalLength on the wire includes the 9-byte totalLength field itself,
+    // matching the Go, Java, and Python encoders and the C gateway convention.
+    let total_len = 63 + to.len() + from.len() + header_bytes.len() + payload_bytes.len();
 
-    if content_len as i64 > max {
+    if total_len as i64 > max {
         return Err(EncodeError::new(
             MsgErrCode::EncodePayloadTooLarge,
             format!(
                 "total message {} bytes exceeds limit {} bytes",
-                content_len, max
+                total_len, max
             ),
         ));
     }
@@ -86,8 +88,8 @@ pub fn encode_message(
         .map(|p| p.data_type.as_wire_int())
         .unwrap_or(0);
 
-    let mut buf = Vec::with_capacity(9 + content_len);
-    write_hex_len(&mut buf, content_len); // totalLength
+    let mut buf = Vec::with_capacity(total_len);
+    write_hex_len(&mut buf, total_len); // totalLength
     write_hex_len(&mut buf, to.len()); // toLength
     write_hex_len(&mut buf, from.len()); // fromLength
     write_hex_len(&mut buf, header_bytes.len()); // headerLength

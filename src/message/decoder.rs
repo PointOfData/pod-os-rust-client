@@ -334,6 +334,10 @@ fn parse_get_events_for_tags_payload(msg: &mut Message, payload: &str) {
                 if let Some(tt) = target_tags.remove(&link.event_b) {
                     link.target_tags = tt;
                 }
+                // Populate unique_id_a from parent event's unique_id (links are stored on the source event)
+                if link.unique_id_a.is_empty() && !event.unique_id.is_empty() {
+                    link.unique_id_a = event.unique_id.clone();
+                }
                 event.links.push(link);
             }
         }
@@ -456,6 +460,13 @@ fn parse_get_event_response(msg: &mut Message, hm: &HashMap<String, String>, pay
     // Apply to event
     let event = msg.event.get_or_insert_with(EventFields::default);
     event.tags = tags;
+    // Populate unique_id_a from parent event's unique_id (links are stored on the source event)
+    let event_uid = event.unique_id.clone();
+    for link in &mut links {
+        if link.unique_id_a.is_empty() && !event_uid.is_empty() {
+            link.unique_id_a = event_uid.clone();
+        }
+    }
     event.links = links;
 }
 
@@ -623,23 +634,22 @@ pub fn replace_from_in_raw_message(raw: &[u8], new_from: &str) -> Result<Vec<u8>
 
     let new_from_bytes = new_from.as_bytes();
     let new_from_len = new_from_bytes.len();
-    let new_total = 54 + old_to_len + new_from_len + header_len + payload_len;
+    let new_total = 63 + old_to_len + new_from_len + header_len + payload_len;
 
     let max = max_message_size();
-    if (9 + new_total) as i64 > max {
+    if new_total as i64 > max {
         return Err(DecodeError::new(
             MsgErrCode::DecodePayloadTooLarge,
             format!(
                 "reconstructed message {} bytes exceeds limit {} bytes",
-                9 + new_total,
-                max
+                new_total, max
             ),
         ));
     }
 
-    let mut out = Vec::with_capacity(9 + new_total);
+    let mut out = Vec::with_capacity(new_total);
 
-    // totalLength
+    // totalLength (includes the 9-byte prefix itself)
     out.extend_from_slice(format!("x{:08x}", new_total).as_bytes());
     // toLength (unchanged)
     out.extend_from_slice(&raw[9..18]);
@@ -667,7 +677,7 @@ mod tests {
     use crate::message::{
         encoder::encode_message,
         intents,
-        types::{Envelope, Message},
+        types::{Envelope, EventFields, Message, ResponseFields},
     };
 
     #[test]
@@ -691,5 +701,44 @@ mod tests {
         let decoded = decode_message(encoded.as_bytes()).unwrap();
         assert_eq!(decoded.envelope.to, "$system@gateway.local");
         assert_eq!(decoded.envelope.from, "client@gateway.local");
+    }
+
+    #[test]
+    fn get_events_for_tags_links_populate_unique_id_a() {
+        let payload = "_event_id=evt1\tunique_id=src_uid\n\
+                       _link=event_id_a=evt1\tevent_id_b=evt2\tunique_id_b=tgt_uid\tstrength_a=0.9\tcategory=describes";
+        let mut msg = Message {
+            response: Some(ResponseFields::default()),
+            ..Default::default()
+        };
+        parse_get_events_for_tags_payload(&mut msg, payload);
+
+        let events = &msg.response.unwrap().event_records;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].links.len(), 1);
+        assert_eq!(events[0].links[0].unique_id_a, "src_uid");
+        assert_eq!(events[0].links[0].unique_id_b, "tgt_uid");
+    }
+
+    #[test]
+    fn get_event_response_links_populate_unique_id_a() {
+        let payload = "_link=event_id_b=evt2\tunique_id_b=tgt_uid\tstrength_a=0.9\tcategory=describes";
+        let mut hm = HashMap::new();
+        hm.insert("event_id".to_string(), "evt1".to_string());
+
+        let mut msg = Message {
+            event: Some(EventFields {
+                id: "evt1".to_string(),
+                unique_id: "src_uid".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        parse_get_event_response(&mut msg, &hm, payload);
+
+        let event = msg.event.unwrap();
+        assert_eq!(event.links.len(), 1);
+        assert_eq!(event.links[0].unique_id_a, "src_uid");
+        assert_eq!(event.links[0].unique_id_b, "tgt_uid");
     }
 }
