@@ -144,6 +144,10 @@ impl Client {
         // Disable Nagle — optimises for low-latency small messages
         stream.set_nodelay(true).ok();
 
+        // Enable TCP keep-alive for faster dead-connection detection
+        let sock_ref = socket2::SockRef::from(&stream);
+        sock_ref.set_keepalive(true).ok();
+
         let (read_half, write_half) = stream.into_split();
 
         Ok(Arc::new(Self {
@@ -339,6 +343,11 @@ impl Client {
             .await?;
 
         stream.set_nodelay(true).ok();
+
+        // Re-apply TCP keep-alive after reconnection
+        let sock_ref = socket2::SockRef::from(&stream);
+        sock_ref.set_keepalive(true).ok();
+
         let (r, w) = stream.into_split();
         *self.write_half.lock().await = Some(w);
         *self.read_half.lock().await = Some(r);

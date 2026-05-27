@@ -71,6 +71,7 @@
 
 pub mod client;
 pub mod config;
+pub mod config_loaders;
 pub mod connection;
 pub mod errors;
 pub mod knowledge;
@@ -84,6 +85,7 @@ pub use client::{
     remove_client_by_gateway_actor_name, Client, ERR_CONNECTION_LOST,
 };
 pub use config::Config;
+pub use config_loaders::{config_from_env, config_from_ini};
 pub use errors::{ErrCode, GatewayDError};
 pub use log::{Level, Logger, NoOpLogger, TracingLogger};
 pub use message::{

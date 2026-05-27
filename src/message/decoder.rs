@@ -130,6 +130,15 @@ pub fn decode_message(raw: &[u8]) -> Result<Message, DecodeError> {
         parse_get_event_response(&mut msg, &header_map, &payload_str);
     } else if intent == GET_EVENTS_FOR_TAGS || intent == GET_EVENTS_FOR_TAGS_RESPONSE {
         parse_get_events_for_tags_payload(&mut msg, &payload_str);
+        // BufferResults=N: ENM inlines event/link records in the header tab stream
+        // (payload is often empty). The payload parser only handles newline records.
+        if msg
+            .response
+            .as_ref()
+            .map_or(true, |r| r.event_records.is_empty() && r.brief_hits.is_empty())
+        {
+            parse_get_events_for_tags_inline_header(&mut msg, &header_str);
+        }
     } else if intent == STORE_BATCH_EVENTS || intent == STORE_BATCH_EVENTS_RESPONSE {
         parse_store_batch_events_payload(&mut msg, &payload_str);
     } else if intent == STORE_BATCH_LINKS || intent == STORE_BATCH_LINKS_RESPONSE {
@@ -359,12 +368,111 @@ fn apply_event_fields(fields: &HashMap<String, String>, e: &mut EventFields) {
             "_hits" => e.hits = v.parse().unwrap_or(0),
             _ if k.starts_with("tag:") => {
                 if let Some(t) = parse_inline_tag(k, v) {
+                    if t.key == "_unique_id" || t.key == "unique_id" {
+                        e.unique_id = t.value.clone();
+                    }
                     e.tags.push(t);
                 }
             }
             _ => {}
         }
     }
+}
+
+/// Parse GetEventsForTags records inlined in the header tab stream (BufferResults=N).
+///
+/// ENM appends `_event_id`, tags, and link records as tab-separated fields after the
+/// response metadata fields when the payload body is empty.
+fn parse_get_events_for_tags_inline_header(msg: &mut Message, header: &str) {
+    let mut events: Vec<EventFields> = Vec::new();
+    let mut brief_hits: Vec<BriefHitRecord> = Vec::new();
+    let mut event_links: HashMap<String, Vec<LinkFields>> = HashMap::new();
+    let mut link_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
+    let mut target_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
+    let mut current_event: Option<EventFields> = None;
+
+    for part in header.split('\t') {
+        if part.is_empty() {
+            continue;
+        }
+        let Some(eq) = part.find('=') else {
+            continue;
+        };
+        let key = &part[..eq];
+        let val = &part[eq + 1..];
+
+        match key {
+            "_event_id" => {
+                if let Some(e) = current_event.take() {
+                    events.push(e);
+                }
+                let mut e = EventFields::default();
+                e.id = val.to_string();
+                current_event = Some(e);
+            }
+            "_brief_hit" => {
+                if let Some(e) = current_event.take() {
+                    events.push(e);
+                }
+                brief_hits.push(BriefHitRecord {
+                    event_id: val.to_string(),
+                    total_hits: 0,
+                });
+            }
+            "_link" => {
+                let lf = parse_link_line(val);
+                let event_id = lf.event_a.clone();
+                event_links.entry(event_id).or_default().push(lf);
+            }
+            "_linktag" => {
+                if let Some(tag) = parse_tag_output_line(val) {
+                    let link_id = val.split('\t').next().unwrap_or("").to_string();
+                    link_tags.entry(link_id).or_default().push(tag);
+                }
+            }
+            "_targettag" => {
+                if let Some(tag) = parse_tag_output_line(val) {
+                    let event_id = val.split('\t').next().unwrap_or("").to_string();
+                    target_tags.entry(event_id).or_default().push(tag);
+                }
+            }
+            k if current_event.is_some() => {
+                let mut fields = HashMap::new();
+                fields.insert(k.to_string(), val.to_string());
+                apply_event_fields(&fields, current_event.as_mut().unwrap());
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(e) = current_event {
+        events.push(e);
+    }
+
+    if events.is_empty() && brief_hits.is_empty() {
+        return;
+    }
+
+    for event in &mut events {
+        if let Some(links) = event_links.remove(&event.id) {
+            for mut link in links {
+                if let Some(lt) = link_tags.remove(&link.id) {
+                    link.tags = lt;
+                }
+                if let Some(tt) = target_tags.remove(&link.event_b) {
+                    link.target_tags = tt;
+                }
+                if link.unique_id_a.is_empty() && !event.unique_id.is_empty() {
+                    link.unique_id_a = event.unique_id.clone();
+                }
+                event.links.push(link);
+            }
+        }
+    }
+
+    let resp = msg.response.get_or_insert_with(ResponseFields::default);
+    resp.event_records = events;
+    resp.brief_hits = brief_hits;
 }
 
 fn parse_inline_tag(key: &str, value: &str) -> Option<TagOutput> {
@@ -701,6 +809,37 @@ mod tests {
         let decoded = decode_message(encoded.as_bytes()).unwrap();
         assert_eq!(decoded.envelope.to, "$system@gateway.local");
         assert_eq!(decoded.envelope.from, "client@gateway.local");
+    }
+
+    #[test]
+    fn get_events_for_tags_inline_header_buffer_results_n() {
+        let header = "_command=events_for_tag\t_type=events_for_tag\t_status=ok\t_total_event_hits=1\t\
+                      _returned_event_hits=1\t_msg_id=test-msg-id\t\
+                      _event_id=+1779546961.870109\t_hits=1\t\
+                      tag:1:kind=session\ttag:1:status=active\ttag:1:created_by=default\t\
+                      tag:1:_unique_id=session-fa851eb8-2e64-41f2-bc64-1dc05df2cbc9";
+        let mut msg = Message {
+            response: Some(ResponseFields {
+                status: "ok".to_string(),
+                total_events: 1,
+                returned_events: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        parse_get_events_for_tags_inline_header(&mut msg, header);
+
+        let resp = msg.response.unwrap();
+        assert_eq!(resp.event_records.len(), 1);
+        let event = &resp.event_records[0];
+        assert_eq!(event.id, "+1779546961.870109");
+        assert_eq!(event.unique_id, "session-fa851eb8-2e64-41f2-bc64-1dc05df2cbc9");
+        assert_eq!(event.hits, 1);
+        assert!(event.tags.iter().any(|t| t.key == "kind" && t.value == "session"));
+        assert!(event
+            .tags
+            .iter()
+            .any(|t| t.key == "created_by" && t.value == "default"));
     }
 
     #[test]

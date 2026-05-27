@@ -226,7 +226,7 @@ pub struct GetEventOptions {
     pub tag_filter: String,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct GetEventsForTagsOptions {
     pub event_pattern: String,
     pub event_pattern_high: String,
@@ -254,6 +254,40 @@ pub struct GetEventsForTagsOptions {
     pub invert_hit_tag_filter: bool,
     pub hit_tag_filter: String,
     pub buffer_format: String,
+}
+
+impl Default for GetEventsForTagsOptions {
+    fn default() -> Self {
+        Self {
+            event_pattern: String::new(),
+            event_pattern_high: String::new(),
+            include_brief_hits: false,
+            get_all_data: false,
+            first_link: 0,
+            link_count: 0,
+            events_per_message: 0,
+            start_result: 0,
+            end_result: 0,
+            min_event_hits: 0,
+            count_only: false,
+            get_match_links: false,
+            count_match_links: false,
+            get_link_tags: false,
+            get_target_tags: false,
+            link_tag_filter: String::new(),
+            linked_events_filter: String::new(),
+            link_category: String::new(),
+            owner: String::new(),
+            owner_unique_id: String::new(),
+            get_event_object_count: false,
+            // ENM default: return all matching events in one payload document.
+            buffer_results: true,
+            include_tag_stats: false,
+            invert_hit_tag_filter: false,
+            hit_tag_filter: String::new(),
+            buffer_format: "0".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]

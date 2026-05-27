@@ -342,6 +342,18 @@ impl Client {
         }
     }
 
+    /// Send a message without waiting for a response.
+    ///
+    /// Use this for fire-and-forget messages such as `ACTOR_RESPONSE` where
+    /// the gateway routes the message to the target actor but does not send
+    /// a delivery receipt back to the sender.
+    pub async fn send_without_response(&self, msg: &mut Message) -> Result<(), GatewayDError> {
+        self.autocorrect_envelope(msg);
+        let encoded = encode_message(msg, "")
+            .map_err(|e| GatewayDError::new(ErrCode::ClientSendFailed, format!("encode: {e}")))?;
+        self.conn.send(encoded.as_bytes()).await
+    }
+
     /// Send a pre-encoded control message directly.
     pub async fn send_control_message(&self, msg: &SocketMessage) -> Result<(), GatewayDError> {
         self.conn.send(msg.as_bytes()).await
@@ -449,6 +461,29 @@ impl Client {
     }
 
     async fn send_sync(&self, msg: &Message) -> Result<Message, GatewayDError> {
+        match self.do_send_sync(msg).await {
+            Err(ref e)
+                if self.cfg.reconnect_config.is_enabled()
+                    && is_connection_error(&e.message) =>
+            {
+                self.logger.info(
+                    "sync send failed with connection error, attempting reconnection",
+                    &[("error", &e.message)],
+                );
+                if self.attempt_sync_reconnection().await {
+                    self.do_send_sync(msg).await
+                } else {
+                    Err(GatewayDError::new(
+                        ErrCode::GatewayDisconnected,
+                        "reconnection failed after sync send error",
+                    ))
+                }
+            }
+            other => other,
+        }
+    }
+
+    async fn do_send_sync(&self, msg: &Message) -> Result<Message, GatewayDError> {
         let encoded = encode_message(msg, "")
             .map_err(|e| GatewayDError::new(ErrCode::ClientSendFailed, format!("encode: {e}")))?;
         self.conn.send(encoded.as_bytes()).await?;
@@ -458,6 +493,29 @@ impl Client {
     }
 
     async fn send_sync_with_raw(&self, msg: &Message) -> Result<(Message, Vec<u8>), GatewayDError> {
+        match self.do_send_sync_with_raw(msg).await {
+            Err(ref e)
+                if self.cfg.reconnect_config.is_enabled()
+                    && is_connection_error(&e.message) =>
+            {
+                self.logger.info(
+                    "sync send (raw) failed with connection error, attempting reconnection",
+                    &[("error", &e.message)],
+                );
+                if self.attempt_sync_reconnection().await {
+                    self.do_send_sync_with_raw(msg).await
+                } else {
+                    Err(GatewayDError::new(
+                        ErrCode::GatewayDisconnected,
+                        "reconnection failed after sync send error",
+                    ))
+                }
+            }
+            other => other,
+        }
+    }
+
+    async fn do_send_sync_with_raw(&self, msg: &Message) -> Result<(Message, Vec<u8>), GatewayDError> {
         let encoded = encode_message(msg, "")
             .map_err(|e| GatewayDError::new(ErrCode::ClientSendFailed, format!("encode: {e}")))?;
         self.conn.send(encoded.as_bytes()).await?;
@@ -465,6 +523,35 @@ impl Client {
         let decoded = decode_message(&raw)
             .map_err(|e| GatewayDError::new(ErrCode::InvalidResponse, format!("decode: {e}")))?;
         Ok((decoded, raw))
+    }
+
+    /// Attempt a single reconnection cycle for the sync send path.
+    /// Uses exponential backoff from ReconnectConfig. Returns true on success.
+    async fn attempt_sync_reconnection(&self) -> bool {
+        let rc = &self.cfg.reconnect_config;
+        let max = rc.max_retries;
+        let mut delay_secs = rc.initial_backoff().as_secs_f64();
+        let max_secs = rc.max_backoff().as_secs_f64();
+        let mult = rc.backoff_multiplier();
+
+        for attempt in 0.. {
+            if max > 0 && attempt >= max {
+                break;
+            }
+
+            tokio::time::sleep(Duration::from_secs_f64(delay_secs)).await;
+
+            match self.conn.reconnect().await {
+                Ok(()) => match self.re_authenticate().await {
+                    Ok(()) => return true,
+                    Err(_) => {}
+                },
+                Err(_) => {}
+            }
+
+            delay_secs = (delay_secs * mult).min(max_secs);
+        }
+        false
     }
 
     async fn send_concurrent(&self, msg: &Message) -> Result<Arc<Message>, GatewayDError> {
