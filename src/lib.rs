@@ -74,18 +74,26 @@ pub mod config;
 pub mod config_loaders;
 pub mod connection;
 pub mod errors;
+pub mod health;
 pub mod knowledge;
 pub mod log;
 pub mod message;
+pub mod readiness;
 
 // ── Top-level re-exports ─────────────────────────────────────────────────────
 
 pub use client::{
-    get_client_by_gateway_actor_name, get_client_count, is_connection_error, is_timeout_error,
-    remove_client_by_gateway_actor_name, Client, ERR_CONNECTION_LOST,
+    get_client_by_gateway_actor_name, get_client_count, remove_client_by_gateway_actor_name,
+    Client, ConnectionState, ERR_CONNECTION_LOST,
 };
 pub use config::Config;
 pub use config_loaders::{config_from_env, config_from_ini};
+pub use health::{build_status_health_reply, respond_to_health_checks};
+pub use readiness::{
+    actor_health_probe_succeeded, build_actor_health_probe_message,
+    is_neural_memory_backed_for_health_probe, wait_for_actor_aip_ready,
+    wait_for_gateway_aip_ready, ActorAIPReadinessConfig, GatewayReadinessProbe,
+};
 pub use errors::{ErrCode, GatewayDError};
 pub use log::{Level, Logger, NoOpLogger, TracingLogger};
 pub use message::{

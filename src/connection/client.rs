@@ -40,6 +40,61 @@ const MAX_ZERO_WRITES: usize = 3;
 /// 9-byte length prefix size.
 const LEN_PREFIX_BYTES: usize = 9;
 
+/// Aggressive keepalive so a dead/half-open peer surfaces as a hard read error
+/// within ~30s, plus a matching TCP_USER_TIMEOUT (Linux) so unacknowledged
+/// writes fail fast instead of blocking for the OS default.
+const KEEPALIVE_IDLE: Duration = Duration::from_secs(15);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
+const KEEPALIVE_RETRIES: u32 = 3;
+const TCP_USER_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Apply TCP_NODELAY, aggressive keepalive, and TCP_USER_TIMEOUT to a freshly
+/// dialed stream. Errors are ignored (best-effort tuning).
+fn apply_tcp_options(
+    stream: &TcpStream,
+    idle: Duration,
+    interval: Duration,
+    retries: u32,
+    user_timeout: Duration,
+) {
+    stream.set_nodelay(true).ok();
+    let sock_ref = socket2::SockRef::from(stream);
+
+    let ka_idle = if idle.is_zero() { KEEPALIVE_IDLE } else { idle };
+    let ka_interval = if interval.is_zero() {
+        KEEPALIVE_INTERVAL
+    } else {
+        interval
+    };
+    let ka_retries = if retries == 0 {
+        KEEPALIVE_RETRIES
+    } else {
+        retries
+    };
+    let ka_user_timeout = if user_timeout.is_zero() {
+        TCP_USER_TIMEOUT
+    } else {
+        user_timeout
+    };
+
+    let ka = socket2::TcpKeepalive::new()
+        .with_time(ka_idle)
+        .with_interval(ka_interval);
+    // Probe count and TCP_USER_TIMEOUT are Linux-specific knobs.
+    #[cfg(target_os = "linux")]
+    let ka = ka.with_retries(ka_retries);
+    sock_ref.set_tcp_keepalive(&ka).ok();
+
+    #[cfg(target_os = "linux")]
+    {
+        sock_ref.set_tcp_user_timeout(Some(ka_user_timeout)).ok();
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (ka_retries, ka_user_timeout);
+    }
+}
+
 // ── ClientConfig ─────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -50,6 +105,10 @@ pub struct ClientConfig {
     pub dial_timeout: Duration,
     pub send_timeout: Duration,
     pub receive_timeout: Duration,
+    pub tcp_keep_alive_idle: Duration,
+    pub tcp_keep_alive_interval: Duration,
+    pub tcp_keep_alive_count: u32,
+    pub tcp_user_timeout: Duration,
 }
 
 impl Default for ClientConfig {
@@ -62,6 +121,10 @@ impl Default for ClientConfig {
             dial_timeout: Duration::from_secs(10),
             send_timeout: Duration::from_secs(30),
             receive_timeout: Duration::from_secs(30),
+            tcp_keep_alive_idle: Duration::ZERO,
+            tcp_keep_alive_interval: Duration::ZERO,
+            tcp_keep_alive_count: 0,
+            tcp_user_timeout: Duration::ZERO,
         }
     }
 }
@@ -90,6 +153,10 @@ pub struct Client {
     logger: Arc<dyn Logger>,
     wire_hook: Arc<dyn WireHook>,
     _tracer: Arc<dyn Tracer>,
+    tcp_keep_alive_idle: Duration,
+    tcp_keep_alive_interval: Duration,
+    tcp_keep_alive_count: u32,
+    tcp_user_timeout: Duration,
 }
 
 impl Client {
@@ -141,12 +208,15 @@ impl Client {
             })
             .await?;
 
-        // Disable Nagle — optimises for low-latency small messages
-        stream.set_nodelay(true).ok();
-
-        // Enable TCP keep-alive for faster dead-connection detection
-        let sock_ref = socket2::SockRef::from(&stream);
-        sock_ref.set_keepalive(true).ok();
+        // TCP_NODELAY + aggressive keepalive + TCP_USER_TIMEOUT for fast
+        // dead-connection detection.
+        apply_tcp_options(
+            &stream,
+            cfg.tcp_keep_alive_idle,
+            cfg.tcp_keep_alive_interval,
+            cfg.tcp_keep_alive_count,
+            cfg.tcp_user_timeout,
+        );
 
         let (read_half, write_half) = stream.into_split();
 
@@ -167,11 +237,26 @@ impl Client {
             logger: cfg.logger,
             wire_hook: cfg.wire_hook,
             _tracer: cfg.tracer,
+            tcp_keep_alive_idle: cfg.tcp_keep_alive_idle,
+            tcp_keep_alive_interval: cfg.tcp_keep_alive_interval,
+            tcp_keep_alive_count: cfg.tcp_keep_alive_count,
+            tcp_user_timeout: cfg.tcp_user_timeout,
         }))
     }
 
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Acquire)
+    }
+
+    /// Mark the transport dead and re-tag the error as a fatal ConnectionLost so
+    /// the receive loop reconnects and fails in-flight callers.
+    fn mark_lost(&self, err: GatewayDError) -> GatewayDError {
+        self.connected.store(false, Ordering::Release);
+        if err.code == ErrCode::ConnectionLost {
+            err
+        } else {
+            GatewayDError::new(ErrCode::ConnectionLost, err.message)
+        }
     }
 
     pub fn remote_addr(&self) -> String {
@@ -198,17 +283,27 @@ impl Client {
 
         while pos < data.len() {
             let write_fut = writer.write(&data[pos..]);
-            let n = timeout(self.send_timeout, write_fut)
-                .await
-                .map_err(|_| GatewayDError::new(ErrCode::ClientSendFailed, "send timeout"))?
-                .map_err(|e| GatewayDError::wrap(ErrCode::ClientSendFailed, "write error", e))?;
+            // A write timeout or error means the socket is dead (RST, broken
+            // pipe, or TCP_USER_TIMEOUT). Mark disconnected and surface a fatal
+            // connection-lost error so senders stop and the receiver reconnects.
+            let n = match timeout(self.send_timeout, write_fut).await {
+                Err(_) => {
+                    self.connected.store(false, Ordering::Release);
+                    return Err(GatewayDError::new(ErrCode::ConnectionLost, "send timeout"));
+                }
+                Ok(Err(e)) => {
+                    self.connected.store(false, Ordering::Release);
+                    return Err(GatewayDError::wrap(ErrCode::ConnectionLost, "write error", e));
+                }
+                Ok(Ok(n)) => n,
+            };
 
             if n == 0 {
                 zero_writes += 1;
                 if zero_writes >= MAX_ZERO_WRITES {
                     self.connected.store(false, Ordering::Release);
                     return Err(GatewayDError::new(
-                        ErrCode::ClientSendFailed,
+                        ErrCode::ConnectionLost,
                         "repeated zero-byte writes",
                     ));
                 }
@@ -230,6 +325,14 @@ impl Client {
     /// Returns the raw bytes (including the 9-byte length prefix) for
     /// `decode_message`.
     pub async fn receive(&self) -> Result<Vec<u8>, GatewayDError> {
+        self.receive_with_timeout(self.receive_timeout).await
+    }
+
+    /// Read one complete framed message with an explicit timeout override.
+    pub async fn receive_with_timeout(
+        &self,
+        receive_timeout: Duration,
+    ) -> Result<Vec<u8>, GatewayDError> {
         if !self.is_connected() {
             return Err(GatewayDError::new(
                 ErrCode::ClientNotConnected,
@@ -242,33 +345,44 @@ impl Client {
             .ok_or_else(|| GatewayDError::new(ErrCode::ClientNotConnected, "read half is gone"))?;
 
         // ── Read the 9-byte length prefix ─────────────────────────────────
+        // A timeout here is a benign idle read (no frame was in progress). Any
+        // other error means the socket is dead -> fatal.
         let mut prefix = [0u8; LEN_PREFIX_BYTES];
         let read_prefix = reader.read_exact(&mut prefix);
-        timeout(self.receive_timeout, read_prefix)
-            .await
-            .map_err(|_| {
-                GatewayDError::new(ErrCode::ClientReceiveFailed, "receive timeout (prefix)")
-            })?
-            .map_err(|e| {
-                GatewayDError::wrap(ErrCode::ClientReceiveFailed, "read prefix error", e)
-            })?;
+        match timeout(receive_timeout, read_prefix).await {
+            Err(_) => {
+                return Err(GatewayDError::new(
+                    ErrCode::ReceiveIdleTimeout,
+                    "receive idle timeout (prefix)",
+                ));
+            }
+            Ok(Err(e)) => {
+                self.connected.store(false, Ordering::Release);
+                return Err(GatewayDError::wrap(
+                    ErrCode::ConnectionLost,
+                    "read prefix error",
+                    e,
+                ));
+            }
+            Ok(Ok(_)) => {}
+        }
 
-        let total_len = parse_length_prefix(&prefix)?;
+        let total_len = parse_length_prefix(&prefix).map_err(|e| self.mark_lost(e))?;
         if total_len < LEN_PREFIX_BYTES {
-            return Err(GatewayDError::new(
-                ErrCode::ClientReceiveFailed,
+            return Err(self.mark_lost(GatewayDError::new(
+                ErrCode::ConnectionLost,
                 "declared totalLength < 9",
-            ));
+            )));
         }
         let max_size = crate::message::constants::max_message_size() as usize;
         if total_len > max_size {
-            return Err(GatewayDError::new(
-                ErrCode::ClientReceiveFailed,
+            return Err(self.mark_lost(GatewayDError::new(
+                ErrCode::ConnectionLost,
                 format!(
                     "declared totalLength {} exceeds max message size {}",
                     total_len, max_size
                 ),
-            ));
+            )));
         }
         let body_len = total_len - LEN_PREFIX_BYTES;
 
@@ -287,14 +401,24 @@ impl Client {
             let end = (pos + chunk_size).min(total_len);
             let slice = &mut buf[pos..end];
             let read_fut = reader.read_exact(slice);
-            timeout(self.receive_timeout, read_fut)
-                .await
-                .map_err(|_| {
-                    GatewayDError::new(ErrCode::ClientReceiveFailed, "receive timeout (body)")
-                })?
-                .map_err(|e| {
-                    GatewayDError::wrap(ErrCode::ClientReceiveFailed, "read body error", e)
-                })?;
+            // We are mid-frame: a timeout or any error here means the stream is
+            // desynced / the peer is dead -> fatal.
+            match timeout(receive_timeout, read_fut).await {
+                Err(_) => {
+                    return Err(self.mark_lost(GatewayDError::new(
+                        ErrCode::ConnectionLost,
+                        "receive timeout mid-frame (body)",
+                    )));
+                }
+                Ok(Err(e)) => {
+                    return Err(self.mark_lost(GatewayDError::wrap(
+                        ErrCode::ConnectionLost,
+                        "read body error",
+                        e,
+                    )));
+                }
+                Ok(Ok(_)) => {}
+            }
             pos = end;
         }
 
@@ -342,11 +466,14 @@ impl Client {
             })
             .await?;
 
-        stream.set_nodelay(true).ok();
-
-        // Re-apply TCP keep-alive after reconnection
-        let sock_ref = socket2::SockRef::from(&stream);
-        sock_ref.set_keepalive(true).ok();
+        // Re-apply TCP tuning after reconnection.
+        apply_tcp_options(
+            &stream,
+            self.tcp_keep_alive_idle,
+            self.tcp_keep_alive_interval,
+            self.tcp_keep_alive_count,
+            self.tcp_user_timeout,
+        );
 
         let (r, w) = stream.into_split();
         *self.write_half.lock().await = Some(w);

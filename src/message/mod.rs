@@ -37,5 +37,6 @@ pub use types::{
 };
 pub use utils::{get_timestamp, get_timestamp_from_time};
 pub use validate::{
-    validation_enabled, ValidationError, ValidationErrors, ValidationErrorsExt, ValidationReport,
+    validate_raw_message, validation_enabled, ValidationError, ValidationErrors,
+    ValidationErrorsExt, ValidationReport,
 };

@@ -361,20 +361,26 @@ fn apply_event_fields(fields: &HashMap<String, String>, e: &mut EventFields) {
     for (k, v) in fields {
         match k.as_str() {
             "_event_id" | "event_id" => e.id = v.clone(),
-            "unique_id" | "_unique_id" => e.unique_id = v.clone(),
+            "unique_id" | "_unique_id" => {
+                if e.unique_id.is_empty() {
+                    e.unique_id = v.clone();
+                }
+            }
             "owner" => e.owner = v.clone(),
             "timestamp" | "_timestamp" => e.timestamp = v.clone(),
             "_type" | "type" => e.r#type = v.clone(),
             "_hits" => e.hits = v.parse().unwrap_or(0),
-            _ if k.starts_with("tag:") => {
-                if let Some(t) = parse_inline_tag(k, v) {
-                    if t.key == "_unique_id" || t.key == "unique_id" {
-                        e.unique_id = t.value.clone();
-                    }
-                    e.tags.push(t);
-                }
-            }
             _ => {}
+        }
+    }
+    for (k, v) in fields {
+        if k.starts_with("tag:") {
+            if let Some(t) = parse_inline_tag(k, v) {
+                if t.key == "_unique_id" || t.key == "unique_id" {
+                    e.unique_id = t.value.clone();
+                }
+                e.tags.push(t);
+            }
         }
     }
 }
@@ -540,9 +546,13 @@ fn parse_get_event_response(msg: &mut Message, hm: &HashMap<String, String>, pay
         }
     }
 
-    // Payload-embedded links
+    // Payload-embedded links and (for send_data) the raw event data blob.
     let mut links: Vec<LinkFields> = Vec::new();
     let mut link_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
+    // Any payload line that is not a recognized link/tag record is treated as the
+    // stored event data blob. With GetEvent.SendData=true (and no other options),
+    // the entire payload is the BLOB (Event.PayloadData.Data).
+    let mut data_lines: Vec<&str> = Vec::new();
 
     for line in payload.lines() {
         if line.is_empty() {
@@ -555,6 +565,10 @@ fn parse_get_event_response(msg: &mut Message, hm: &HashMap<String, String>, pay
                 let link_id = rest.split('\t').next().unwrap_or("").to_string();
                 link_tags.entry(link_id).or_default().push(t);
             }
+        } else if line.starts_with("_targettag") {
+            // target tag record; not surfaced here, but not part of the data blob
+        } else {
+            data_lines.push(line);
         }
     }
 
@@ -568,6 +582,13 @@ fn parse_get_event_response(msg: &mut Message, hm: &HashMap<String, String>, pay
     // Apply to event
     let event = msg.event.get_or_insert_with(EventFields::default);
     event.tags = tags;
+    // Surface the stored data blob, if any.
+    if !data_lines.is_empty() {
+        event.payload_data.data = PayloadData::Text(data_lines.join("\n"));
+        if let Some(mime) = hm.get("mime") {
+            event.payload_data.mime_type = mime.clone();
+        }
+    }
     // Populate unique_id_a from parent event's unique_id (links are stored on the source event)
     let event_uid = event.unique_id.clone();
     for link in &mut links {
@@ -879,5 +900,58 @@ mod tests {
         assert_eq!(event.links.len(), 1);
         assert_eq!(event.links[0].unique_id_a, "src_uid");
         assert_eq!(event.links[0].unique_id_b, "tgt_uid");
+    }
+
+    /// ENM routes GetEventsForTags responses with message_type=11 (ACTOR_RECORD)
+    /// instead of the canonical 1001 (MEM_REPLY).  The decoder must still parse
+    /// the event records from the payload.
+    #[test]
+    fn decode_events_for_tags_response_with_actor_record_msg_type() {
+        let to = "iris@gw.local";
+        let from = "memory@gw.local";
+        let header = "_command=events_for_tag\t_type=events_for_tag\t_status=ok\t\
+                      _total_event_hits=1\t_returned_event_hits=1\t\
+                      _msg_id=test-11";
+        let payload = "_event_id=+1779915728.313839\tunique_id=sess-aaa\t_hits=1\t\
+                       tag:1:kind=session\ttag:1:status=active\t\
+                       tag:1:_unique_id=session-fa851eb8";
+
+        let msg_type: i32 = 11; // ACTOR_RECORD, not 1001
+        let data_type: i32 = 0;
+
+        let to_b = to.as_bytes();
+        let from_b = from.as_bytes();
+        let hdr_b = header.as_bytes();
+        let pay_b = payload.as_bytes();
+        let total = 63 + to_b.len() + from_b.len() + hdr_b.len() + pay_b.len();
+
+        let mut buf = Vec::with_capacity(total);
+        buf.extend_from_slice(format!("x{:08x}", total).as_bytes());
+        buf.extend_from_slice(format!("x{:08x}", to_b.len()).as_bytes());
+        buf.extend_from_slice(format!("x{:08x}", from_b.len()).as_bytes());
+        buf.extend_from_slice(format!("x{:08x}", hdr_b.len()).as_bytes());
+        buf.extend_from_slice(format!("{:09}", msg_type).as_bytes());
+        buf.extend_from_slice(format!("{:09}", data_type).as_bytes());
+        buf.extend_from_slice(format!("x{:08x}", pay_b.len()).as_bytes());
+        buf.extend_from_slice(to_b);
+        buf.extend_from_slice(from_b);
+        buf.extend_from_slice(hdr_b);
+        buf.extend_from_slice(pay_b);
+
+        let decoded = decode_message(&buf).expect("decode should succeed");
+
+        let resp = decoded.response.as_ref().expect("response should be present");
+        assert_eq!(resp.returned_events, 1);
+        assert_eq!(resp.total_events, 1);
+        assert_eq!(
+            resp.event_records.len(),
+            1,
+            "event_records must be populated even with msg_type=11"
+        );
+
+        let event = &resp.event_records[0];
+        assert_eq!(event.id, "+1779915728.313839");
+        assert_eq!(event.unique_id, "session-fa851eb8");
+        assert!(event.tags.iter().any(|t| t.key == "kind" && t.value == "session"));
     }
 }

@@ -193,7 +193,8 @@ const ALL_INTENTS: &[&Intent] = &[
 // ── Public lookup functions ──────────────────────────────────────────────────
 
 /// Resolve an intent from `(message_type, neural_memory_command)`.
-/// Falls back to lookup by message_type alone when command is empty.
+/// Falls back to lookup by message_type alone when command is empty or the
+/// `(message_type, command)` pair is unknown.
 pub fn intent_from_message_type_and_command(
     message_type: i32,
     command: &str,
@@ -201,6 +202,11 @@ pub fn intent_from_message_type_and_command(
     if !command.is_empty() {
         if let Some(i) = BY_TYPE_AND_CMD.get(&(message_type, command)) {
             return Some(i);
+        }
+        // ENM may route GetEventsForTags replies as ACTOR_RECORD (11) while retaining
+        // `_type=events_for_tag` / `_command=events_for_tag` in the header.
+        if command == "events_for_tag" && message_type != GET_EVENTS_FOR_TAGS.message_type {
+            return Some(&GET_EVENTS_FOR_TAGS_RESPONSE);
         }
     }
     BY_MESSAGE_TYPE.get(&message_type).copied()
@@ -219,4 +225,33 @@ pub fn intent_from_response_command(command: &str) -> Option<&'static Intent> {
 /// Resolve from message_type only.
 pub fn intent_from_message_type(message_type: i32) -> Option<&'static Intent> {
     BY_MESSAGE_TYPE.get(&message_type).copied()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_response_resolves() {
+        let i = intent_from_message_type_and_command(1001, "events_for_tag");
+        assert_eq!(i, Some(&GET_EVENTS_FOR_TAGS_RESPONSE));
+    }
+
+    #[test]
+    fn canonical_request_resolves() {
+        let i = intent_from_message_type_and_command(1000, "events_for_tag");
+        assert_eq!(i, Some(&GET_EVENTS_FOR_TAGS));
+    }
+
+    #[test]
+    fn unknown_command_falls_back_to_message_type() {
+        let i = intent_from_message_type_and_command(11, "no_such_cmd");
+        assert_eq!(i, Some(&ACTOR_RECORD));
+    }
+
+    #[test]
+    fn actor_record_events_for_tag_maps_to_search_response() {
+        let i = intent_from_message_type_and_command(11, "events_for_tag");
+        assert_eq!(i, Some(&GET_EVENTS_FOR_TAGS_RESPONSE));
+    }
 }

@@ -365,4 +365,39 @@ mod tests {
         msg.envelope.to = "no-at-sign".to_string();
         assert!(encode_message(&msg, "").is_err());
     }
+
+    #[test]
+    fn get_events_for_tags_header_includes_buffer_results() {
+        use crate::message::types::{
+            GetEventsForTagsOptions, NeuralMemoryFields,
+        };
+        let mut msg = minimal_msg(&intents::GET_EVENTS_FOR_TAGS);
+        msg.neural_memory = Some(NeuralMemoryFields {
+            get_events_for_tags: Some(GetEventsForTagsOptions {
+                buffer_results: true,
+                get_all_data: true,
+                end_result: 10,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        msg.payload = Some(PayloadFields {
+            data: PayloadData::Text("clause_type:S\tlow:kind=session".to_string()),
+            ..Default::default()
+        });
+
+        let sm = encode_message(&msg, "").unwrap();
+        let decoded = crate::message::decoder::decode_message(sm.as_bytes()).unwrap();
+
+        assert_eq!(decoded.envelope.intent, intents::GET_EVENTS_FOR_TAGS);
+
+        let raw = std::str::from_utf8(sm.as_bytes()).unwrap();
+        assert!(raw.contains("buffer_results=Y"), "header must contain buffer_results=Y");
+        assert!(raw.contains("get_all_data=Y"), "header must contain get_all_data=Y");
+        assert!(raw.contains("buffer_format=0"), "header must contain buffer_format=0");
+
+        let msg_type_field = &sm.as_bytes()[36..45];
+        let msg_type = std::str::from_utf8(msg_type_field).unwrap();
+        assert_eq!(msg_type, "000001000", "request message_type must be 1000 (MEM_REQ)");
+    }
 }

@@ -124,6 +124,8 @@ intents::STORE_BATCH_LINKS     // _db_cmd=link_batch
 intents::GATEWAY_ID            // messageType 5  — authentication
 intents::GATEWAY_STREAM_ON     // messageType 10 — enable streaming
 intents::ACTOR_ECHO            // messageType 2  — ping
+intents::STATUS_REQUEST        // messageType 110 — actor health probe
+intents::STATUS                // messageType 3  — actor health reply
 ```
 
 ## Timestamps
@@ -224,11 +226,68 @@ let cfg = Config {
     // Streaming (true by default)
     enable_streaming: Some(true),
 
+    // App-level AIP Keepalive (default 30s; Some(ZERO) disables)
+    keepalive_interval: None,
+
     // Logging  (0=off, 1=error, 2=warn, 3=info, 4=debug)
     log_level: 3,
 
     ..Default::default()
 };
+```
+
+## App-Level Keepalive
+
+`Client` sends periodic AIP `Keepalive` frames (message_type 18) on the primary connection and idle pooled connections. Configure `keepalive_interval`: `None` uses 30s, `Some(Duration::ZERO)` disables. The tokio interval task starts after authentication, pauses while disconnected/reconnecting, and stops on `close()`.
+
+## Actor Health Checks (Non-Neural Memory Actors)
+
+Neural Memory Actors are typically probed with store/get intents. **Socket Actors** use the lightweight AIP `StatusRequest` / `Status` pair instead:
+
+| Intent | message_type | Role |
+|---|---|---|
+| `STATUS_REQUEST` | 110 | Inbound health probe (envelope + optional `_msg_id`) |
+| `STATUS` | 3 | Health reply (`_status`, `_msg`, echoed `_msg_id`) |
+
+### Responding to probes (Actor side)
+
+Enable concurrent mode and call `respond_to_health_checks` after `Client::new`:
+
+```rust
+use std::sync::Arc;
+use pod_os_client::{Client, Config, respond_to_health_checks};
+
+let cfg = Config {
+    enable_concurrent_mode: true,
+    ..Default::default()
+};
+let client = Client::new(cfg).await?;
+respond_to_health_checks(client.clone());
+```
+
+This subscribes to unsolicited inbound frames via `subscribe_incoming()` and replies to `STATUS_REQUEST` probes with fire-and-forget `send_control_message`.
+
+### Sending probes (monitor side)
+
+```rust
+use pod_os_client::message::{intents, types::{Envelope, Message}};
+use uuid::Uuid;
+
+let probe_id = Uuid::new_v4().to_string();
+let mut probe = Message {
+    envelope: Envelope {
+        to: "my-socket-actor@zeroth.pod-os.com".into(),
+        from: format!("{}@{}", client.client_name(), client.actor_name()),
+        intent: intents::STATUS_REQUEST.clone(),
+        client_name: client.client_name().to_string(),
+        message_id: probe_id.clone(),
+        ..Default::default()
+    },
+    ..Default::default()
+};
+let resp = client.send_message(&mut probe).await?;
+assert_eq!(resp.processing_status(), "OK");
+assert_eq!(resp.message_id(), probe_id);
 ```
 
 ## Performance
@@ -259,6 +318,9 @@ Designed to sustain **100 K+ messages per second** in concurrent mode:
 | `connection.Retry` | `connection::retry::Retry` |
 | `log.Logger` (interface) | `log::Logger` (trait) |
 | `knowledge.GetDocument()` | `knowledge::get_document()` |
+| `podos.RespondToHealthChecks()` | `respond_to_health_checks()` |
+| `podos.BuildStatusHealthReply()` | `build_status_health_reply()` |
+| `Client.SetUnmatchedMessageHandler()` | `Client::subscribe_incoming()` |
 
 ## License
 

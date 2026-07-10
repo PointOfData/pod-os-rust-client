@@ -120,6 +120,28 @@ impl ChannelPool {
         let mut rx = self.rx.lock().await;
         while rx.try_recv().is_ok() {}
     }
+
+    /// Invokes a keepalive write on each idle (not checked-out) connection, then
+    /// returns live connections to the idle queue.
+    pub async fn ping_idle_connections(&self, payload: &[u8]) -> usize {
+        let mut idle = Vec::new();
+        {
+            let mut rx = self.rx.lock().await;
+            while let Ok(data) = rx.try_recv() {
+                idle.push(data);
+            }
+        }
+
+        let mut sent = 0;
+        for mut data in idle {
+            use tokio::io::AsyncWriteExt;
+            if data.conn.write_all(payload).await.is_ok() {
+                sent += 1;
+                let _ = self.tx.try_send(data);
+            }
+        }
+        sent
+    }
 }
 
 // ── PoolConn ──────────────────────────────────────────────────────────────────

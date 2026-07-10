@@ -49,6 +49,9 @@ pub fn construct_header(msg: &Message, intent: &Intent, _connection_id_uuid: &st
     if *intent == STORE_BATCH_LINKS {
         return batch_link_events_message_header(msg);
     }
+    if *intent == STATUS {
+        return status_header(msg);
+    }
 
     // Fallback: just include _msg_id if present
     if !msg.envelope.message_id.is_empty() {
@@ -367,6 +370,24 @@ fn unlink_events_message_header(msg: &Message) -> String {
 fn batch_link_events_message_header(msg: &Message) -> String {
     let mut h = Header::new();
     h.add("_db_cmd", "link_batch");
+    h.add_if_nonempty("_msg_id", &msg.envelope.message_id);
+    h.build()
+}
+
+fn status_header(msg: &Message) -> String {
+    let mut h = Header::new();
+    let status = msg
+        .response
+        .as_ref()
+        .map(|r| r.status.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("OK");
+    h.add("_status", status);
+    if let Some(resp) = &msg.response {
+        if !resp.message.is_empty() {
+            h.add("_msg", &resp.message);
+        }
+    }
     h.add_if_nonempty("_msg_id", &msg.envelope.message_id);
     h.build()
 }

@@ -474,6 +474,32 @@ impl Message {
             .as_ref()
             .and_then(|n| n.get_events_for_tags.as_ref())
     }
+
+    /// Event records returned by a GetEventsForTags (search) response.
+    pub fn search_event_records(&self) -> &[EventFields] {
+        self.response
+            .as_ref()
+            .map(|r| r.event_records.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Brief hit summaries from a GetEventsForTags response.
+    pub fn search_brief_hits(&self) -> &[BriefHitRecord] {
+        self.response
+            .as_ref()
+            .map(|r| r.brief_hits.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Total matching events from a search response header.
+    pub fn search_total_events(&self) -> i32 {
+        self.response.as_ref().map_or(0, |r| r.total_events)
+    }
+
+    /// Returned event count from a search response header.
+    pub fn search_returned_events(&self) -> i32 {
+        self.response.as_ref().map_or(0, |r| r.returned_events)
+    }
 }
 
 // ─────────────────────────────────────────────
@@ -614,3 +640,43 @@ pub const ROUTING_ACTION_TYPE_ROUTE: &str = "ROUTE";
 pub const ROUTING_ACTION_TYPE_DISCARD: &str = "DISCARD";
 pub const ROUTING_ACTION_TYPE_CHANGE: &str = "CHANGE";
 pub const ROUTING_ACTION_TYPE_DUPLICATE: &str = "DUPLICATE";
+
+#[cfg(test)]
+mod search_accessor_tests {
+    use super::*;
+
+    #[test]
+    fn search_accessors_read_response_fields() {
+        let msg = Message {
+            response: Some(ResponseFields {
+                total_events: 5,
+                returned_events: 2,
+                event_records: vec![EventFields {
+                    id: "evt-1".to_string(),
+                    unique_id: "uid-1".to_string(),
+                    ..Default::default()
+                }],
+                brief_hits: vec![BriefHitRecord {
+                    event_id: "evt-1".to_string(),
+                    total_hits: 3,
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(msg.search_total_events(), 5);
+        assert_eq!(msg.search_returned_events(), 2);
+        assert_eq!(msg.search_event_records().len(), 1);
+        assert_eq!(msg.search_event_records()[0].unique_id, "uid-1");
+        assert_eq!(msg.search_brief_hits()[0].total_hits, 3);
+    }
+
+    #[test]
+    fn search_accessors_empty_without_response() {
+        let msg = Message::default();
+        assert_eq!(msg.search_total_events(), 0);
+        assert!(msg.search_event_records().is_empty());
+        assert!(msg.search_brief_hits().is_empty());
+    }
+}

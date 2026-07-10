@@ -54,6 +54,13 @@ pub enum ErrCode {
     StorageFailed = 47,
     NetworkFailed = 48,
     NoLoadBalancerRules = 49,
+    /// Fatal, unrecoverable-on-this-socket condition (hard I/O error, mid-frame
+    /// read timeout, or framing desync). The transport is marked disconnected
+    /// and the caller should reconnect/retry.
+    ConnectionLost = 50,
+    /// Benign idle read timeout: no frame bytes were pending, so the connection
+    /// is still considered healthy.
+    ReceiveIdleTimeout = 51,
 }
 
 impl std::fmt::Display for ErrCode {
@@ -106,6 +113,19 @@ impl GatewayDError {
             }
         }
         false
+    }
+
+    /// Whether this is a fatal connection-lost error (the socket is dead and
+    /// must be reconnected). True for the explicit `ConnectionLost`/
+    /// `GatewayDisconnected` codes or any wrapped connection-class I/O error.
+    pub fn is_connection_lost(&self) -> bool {
+        matches!(self.code, ErrCode::ConnectionLost | ErrCode::GatewayDisconnected)
+            || self.is_io_connection_error()
+    }
+
+    /// Whether this is a benign idle receive timeout (connection still healthy).
+    pub fn is_idle_timeout(&self) -> bool {
+        self.code == ErrCode::ReceiveIdleTimeout
     }
 
     /// Check if the underlying source is a connection-class I/O error.

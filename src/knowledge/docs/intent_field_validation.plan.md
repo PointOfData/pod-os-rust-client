@@ -187,6 +187,33 @@ Returns `nil` immediately if `!validationEnabled`. Otherwise returns all violati
 1. **Intent dispatch table** (`map[string]func(*Message) ValidationErrors`): each key is `Intent.Name`.
 2. Per-intent private validator functions (one per intent)
 
+### Owner vs Id semantics (Evolutionary Neural Memory)
+
+Owner (`Event.Owner` / `Event.OwnerUniqueID`, or `Link.OwnerID` / `Link.OwnerUniqueID`) answers **who created or owns** the event. Id (`Event.Id` / `Event.UniqueId`) answers **which event**. These are different semantics:
+
+- **`Event.UniqueId`**: developer-constructed, deterministic, known before storage; portable across DB instances.
+- **`Event.Id`**: AIP-generated at storage time from time+location; enables collection by time/location.
+
+Intents fall into four groups:
+
+| Group | Intents | Id semantics | Owner semantics |
+|-------|---------|--------------|-----------------|
+| **Create** | StoreEvent, StoreBatchEvents, LinkEvent, StoreBatchLinks | Set `UniqueId` (recommended). Do not pre-set `Id` (AIP-generated at storage). | `Owner` = pre-existing internal `Event.Id` **or `$sys`**; `OwnerUniqueID` = pre-existing `Event.UniqueId`. |
+| **Apply-to-existing** | StoreBatchTags, StoreData | `Id` or `UniqueId` = pre-existing target event in this DB (**`$sys` invalid** — not an individual event). | `Owner` = pre-existing internal `Event.Id` (**not `$sys`**) or `OwnerUniqueID` = pre-existing `Event.UniqueId`. Owner may differ from the target Id (creating entity vs. target). |
+| **Lookup** | GetEvent, UnlinkEvent | `Id` = pre-existing internal `Event.Id` **or `$sys`**; `UniqueId` = pre-existing `Event.UniqueId`. | **Not used** (ignored if set). |
+| **Search filter** | GetEventsForTags | **Not used** for event identity. | `Owner` / `OwnerUniqueID` filter the tag search (`Owner` = internal `Event.Id` or `$sys`; `OwnerUniqueID` = `Event.UniqueId`). |
+
+**Enforceable checks (`Rule: "semantic"`)** — implemented in `src/message/validate.rs` (and mirrored in Go/Java/Python validators):
+
+| Severity | Condition | Fix guidance |
+|----------|-----------|--------------|
+| ERROR | StoreBatchTags / StoreData with `Owner == "$sys"` | Owner must be an individual pre-existing event Id, not the system pseudo-entity. |
+| ERROR | StoreBatchTags / StoreData with `Id == "$sys"` or `UniqueId == "$sys"` | `$sys` is not an individual event; use a real target event Id/UniqueId. |
+| WARN | GetEvent / UnlinkEvent with Owner fields set | Owner is ignored; remove and use Id/UniqueId only. |
+| WARN | Create intents with `Event.Id` (or `Link.Id`) set | Id is AIP-generated at storage; set `UniqueId` for a developer-controlled identifier. |
+
+Runtime-only constraints ("pre-existing in same database") are delivered as enriched `Message` / `Fix` / `ExampleCode` text on existing `one_of_required` errors, not as hard failures.
+
 ### Per-Intent validation rules
 
 **Nil-guard convention:** All validators must check the relevant top-level struct pointer (`Event`, `NeuralMemory`, `NeuralMemory.Link`, etc.) before dereferencing any field. A nil struct produces a `Rule: "nil_struct"` error with a Fix directing the caller to initialize it. This applies to both struct validation (`Validate()`) and wire validation (`ValidateRawMessage()`).

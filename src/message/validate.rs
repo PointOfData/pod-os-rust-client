@@ -204,6 +204,8 @@ fn dispatch_intent_validator(msg: &Message, errs: &mut ValidationErrors) {
 
     if *intent == STORE_EVENT {
         validate_store_event(msg, errs);
+    } else if *intent == STORE_DATA {
+        validate_store_data(msg, errs);
     } else if *intent == STORE_BATCH_EVENTS {
         validate_store_batch_events(msg, errs);
     } else if *intent == STORE_BATCH_TAGS {
@@ -278,10 +280,11 @@ fn validate_store_event(msg: &Message, errs: &mut ValidationErrors) {
             "owner/owner_unique_id",
             "one_of_required",
             "Either Owner or OwnerUniqueID is required for StoreEvent",
-            "Set event.owner or event.owner_unique_id",
-            "event.owner = \"owner-id\".into()",
+            "Set event.owner or event.owner_unique_id to identify the entity that created this event. Owner is the entity that created the event: Event.Owner must be a pre-existing internal Event.Id in this database or $sys; Event.OwnerUniqueID must be a pre-existing Event.UniqueId.",
+            "event.owner = \"$sys\".into()",
         );
     }
+    validate_create_event_id_set(errs, intent, "Event.Id", &event.id);
 
     required_field(
         errs,
@@ -299,6 +302,55 @@ fn validate_store_event(msg: &Message, errs: &mut ValidationErrors) {
         &event.location_separator,
         "LocationSeparator is required for StoreEvent",
     );
+}
+
+fn validate_store_data(msg: &Message, errs: &mut ValidationErrors) {
+    let intent = "StoreData";
+    let event = match &msg.event {
+        None => {
+            push_err(
+                errs,
+                "error",
+                intent,
+                "Message.Event",
+                "",
+                "nil_struct",
+                "Event fields are required for StoreData",
+                "Initialize msg.event with target id/unique_id and owner",
+                "",
+            );
+            return;
+        }
+        Some(e) => e,
+    };
+
+    if event.id.is_empty() && event.unique_id.is_empty() {
+        push_err(
+            errs,
+            "error",
+            intent,
+            "Event.Id/UniqueId",
+            "event_id/unique_id",
+            "one_of_required",
+            "Either Event.Id or Event.UniqueId is required to identify the target event",
+            "Set event.id or event.unique_id to the pre-existing target event. Event.Id or Event.UniqueId identifies the pre-existing target event ($sys is not an individual event).",
+            "event.unique_id = \"my-event-uid\".into()",
+        );
+    }
+    if event.owner.is_empty() && event.owner_unique_id.is_empty() {
+        push_err(
+            errs,
+            "error",
+            intent,
+            "Event.Owner/OwnerUniqueID",
+            "owner/owner_unique_id",
+            "one_of_required",
+            "Either Owner or OwnerUniqueID is required for StoreData",
+            "Set event.owner or event.owner_unique_id to the creating entity (may differ from target Id). Owner must be a pre-existing internal Event.Id (not $sys) or OwnerUniqueID.",
+            "event.owner_unique_id = \"user-001\".into()",
+        );
+    }
+    validate_apply_to_existing_semantics(errs, intent, event);
 }
 
 fn validate_store_batch_events(msg: &Message, errs: &mut ValidationErrors) {
@@ -365,10 +417,11 @@ fn validate_store_batch_events(msg: &Message, errs: &mut ValidationErrors) {
                     "Either Owner or OwnerUniqueID is required for batch event {}",
                     i
                 ),
-                "Set event.owner or event.owner_unique_id",
+                "Set event.owner or event.owner_unique_id. Owner is the entity that created the event: Event.Owner must be a pre-existing internal Event.Id in this database or $sys; Event.OwnerUniqueID must be a pre-existing Event.UniqueId.",
                 "",
             );
         }
+        validate_create_event_id_set(errs, intent, &format!("{}.Event.Id", prefix), &e.id);
         if e.location.is_empty() {
             push_err(
                 errs,
@@ -415,8 +468,8 @@ fn validate_store_batch_tags(msg: &Message, errs: &mut ValidationErrors) {
             "event_id/unique_id",
             "one_of_required",
             "Either Event.Id or Event.UniqueId is required to identify the target event",
-            "Set event.id or event.unique_id",
-            "",
+            "Set event.id or event.unique_id to the pre-existing target event. Event.Id or Event.UniqueId identifies the pre-existing target event ($sys is not an individual event).",
+            "event.unique_id = \"my-event-uid\".into()",
         );
     }
 
@@ -434,9 +487,13 @@ fn validate_store_batch_tags(msg: &Message, errs: &mut ValidationErrors) {
             "owner/owner_unique_id",
             "one_of_required",
             "Either Owner or OwnerUniqueID is required for StoreBatchTags",
-            "Set event.owner or event.owner_unique_id",
-            "",
+            "Set event.owner or event.owner_unique_id to the creating entity (may differ from target Id). Owner must be a pre-existing internal Event.Id (not $sys) or OwnerUniqueID.",
+            "event.owner_unique_id = \"user-001\".into()",
         );
+    }
+
+    if let Some(ev) = &msg.event {
+        validate_apply_to_existing_semantics(errs, intent, ev);
     }
 
     let tags = match &msg.neural_memory {
@@ -518,10 +575,11 @@ fn validate_get_event(msg: &Message, errs: &mut ValidationErrors) {
             "event_id/unique_id",
             "one_of_required",
             "Either Event.Id or Event.UniqueId is required to identify the event",
-            "Set event.id or event.unique_id",
+            "Set event.id or event.unique_id. Event.Id must be a pre-existing internal Event.Id or $sys; Event.UniqueId must be a pre-existing Event.UniqueId in this database.",
             "",
         );
     }
+    validate_lookup_owner_not_used_event(errs, intent, event);
 }
 
 fn validate_get_events_for_tags(msg: &Message, errs: &mut ValidationErrors) {
@@ -641,10 +699,11 @@ fn validate_link_event(msg: &Message, errs: &mut ValidationErrors) {
             "owner_event_id/owner_unique_id",
             "one_of_required",
             "Either OwnerID or OwnerUniqueID is required for LinkEvent",
-            "Set link.owner_id or link.owner_unique_id",
+            "Set link.owner_id or link.owner_unique_id to the entity that created the link event. Owner is the entity that created the event: Event.Owner must be a pre-existing internal Event.Id in this database or $sys; Event.OwnerUniqueID must be a pre-existing Event.UniqueId.",
             "",
         );
     }
+    validate_create_link_id_set(errs, intent, "Link.Id", &link.id);
 }
 
 fn validate_unlink_event(msg: &Message, errs: &mut ValidationErrors) {
@@ -678,10 +737,11 @@ fn validate_unlink_event(msg: &Message, errs: &mut ValidationErrors) {
             "event_id/unique_id",
             "one_of_required",
             "Either Link.Id or Link.UniqueId is required to identify the link event",
-            "Set link.id or link.unique_id",
+            "Set link.id or link.unique_id. Event.Id must be a pre-existing internal Event.Id or $sys; Event.UniqueId must be a pre-existing Event.UniqueId in this database.",
             "",
         );
     }
+    validate_lookup_owner_not_used_link(errs, intent, link);
 
     // LocationSeparator is required if Location is present
     if !link.location.is_empty() && link.location_separator.is_empty() {
@@ -765,10 +825,11 @@ fn validate_store_batch_links(msg: &Message, errs: &mut ValidationErrors) {
                     "Either event Owner or OwnerUniqueID is required for batch link {}",
                     i
                 ),
-                "Set event.owner or event.owner_unique_id",
+                "Set event.owner or event.owner_unique_id. Owner is the entity that created the event: Event.Owner must be a pre-existing internal Event.Id in this database or $sys; Event.OwnerUniqueID must be a pre-existing Event.UniqueId.",
                 "",
             );
         }
+        validate_create_event_id_set(errs, intent, &format!("{}.Event.Id", prefix), &e.id);
         if e.location.is_empty() {
             push_err(
                 errs,
@@ -859,10 +920,11 @@ fn validate_store_batch_links(msg: &Message, errs: &mut ValidationErrors) {
                     "Either link OwnerID or OwnerUniqueID is required for batch link {}",
                     i
                 ),
-                "Set link.owner_id or link.owner_unique_id",
+                "Set link.owner_id or link.owner_unique_id. Owner is the entity that created the event: Event.Owner must be a pre-existing internal Event.Id in this database or $sys; Event.OwnerUniqueID must be a pre-existing Event.UniqueId.",
                 "",
             );
         }
+        validate_create_link_id_set(errs, intent, &format!("{}.Link.Id", prefix), &l.id);
         if l.location.is_empty() {
             push_err(
                 errs,
@@ -1236,7 +1298,95 @@ fn validate_wire_header_fields(msg: &Message, raw: &[u8], errs: &mut ValidationE
                         "owner/owner_unique_id",
                         "header_missing",
                         "owner or owner_unique_id required in header for tag_store_batch",
-                        "Set event.owner or event.owner_unique_id",
+                        "Set event.owner or event.owner_unique_id to the creating entity (may differ from target Id). Owner must be a pre-existing internal Event.Id (not $sys) or OwnerUniqueID.",
+                        "",
+                    );
+                }
+                if hm.get("owner").map(String::as_str) == Some(SYS_SPECIAL_ID) {
+                    push_err(
+                        errs,
+                        "error",
+                        "StoreBatchTags",
+                        "Event.Owner",
+                        "owner",
+                        "semantic",
+                        "StoreBatchTags owner must not be $sys; owner must be a pre-existing individual event Id.",
+                        "Set Event.Owner to the internal Event.Id of the creating entity.",
+                        "",
+                    );
+                }
+                if hm.get("event_id").map(String::as_str) == Some(SYS_SPECIAL_ID)
+                    || hm.get("unique_id").map(String::as_str) == Some(SYS_SPECIAL_ID)
+                {
+                    push_err(
+                        errs,
+                        "error",
+                        "StoreBatchTags",
+                        "Event.Id/UniqueId",
+                        "event_id/unique_id",
+                        "semantic",
+                        "StoreBatchTags target Id must not be $sys; $sys is not an individual event.",
+                        "Set event.id or event.unique_id to the pre-existing target event.",
+                        "",
+                    );
+                }
+            }
+            "store_data" => {
+                let has_id =
+                    hm.contains_key("event_id") || hm.contains_key("unique_id");
+                if !has_id {
+                    push_err(
+                        errs,
+                        "error",
+                        "StoreData",
+                        "event_id/unique_id",
+                        "event_id/unique_id",
+                        "header_missing",
+                        "event_id or unique_id required in header for store_data",
+                        "Set event.id or event.unique_id to the pre-existing target event.",
+                        "",
+                    );
+                }
+                let has_owner =
+                    hm.contains_key("owner") || hm.contains_key("owner_unique_id");
+                if !has_owner {
+                    push_err(
+                        errs,
+                        "error",
+                        "StoreData",
+                        "owner/owner_unique_id",
+                        "owner/owner_unique_id",
+                        "header_missing",
+                        "owner or owner_unique_id required in header for store_data",
+                        "Set event.owner or event.owner_unique_id.",
+                        "",
+                    );
+                }
+                if hm.get("owner").map(String::as_str) == Some(SYS_SPECIAL_ID) {
+                    push_err(
+                        errs,
+                        "error",
+                        "StoreData",
+                        "Event.Owner",
+                        "owner",
+                        "semantic",
+                        "StoreData owner must not be $sys; owner must be a pre-existing individual event Id.",
+                        "Set Event.Owner to the internal Event.Id of the creating entity.",
+                        "",
+                    );
+                }
+                if hm.get("event_id").map(String::as_str) == Some(SYS_SPECIAL_ID)
+                    || hm.get("unique_id").map(String::as_str) == Some(SYS_SPECIAL_ID)
+                {
+                    push_err(
+                        errs,
+                        "error",
+                        "StoreData",
+                        "Event.Id/UniqueId",
+                        "event_id/unique_id",
+                        "semantic",
+                        "StoreData target Id must not be $sys; $sys is not an individual event.",
+                        "Set event.id or event.unique_id to the pre-existing target event.",
                         "",
                     );
                 }
@@ -1615,6 +1765,128 @@ pub async fn explain_validation_errors(
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+const SYS_SPECIAL_ID: &str = "$sys";
+
+fn is_sys_id(s: &str) -> bool {
+    s == SYS_SPECIAL_ID
+}
+
+fn validate_apply_to_existing_semantics(errs: &mut ValidationErrors, intent: &str, ev: &crate::message::types::EventFields) {
+    if is_sys_id(&ev.owner) {
+        push_err(
+            errs,
+            "error",
+            intent,
+            "Event.Owner",
+            "owner",
+            "semantic",
+            &format!("Event.Owner must not be $sys for {intent}; owner must be a pre-existing individual event Id in this database."),
+            "Set Event.Owner to the internal Event.Id of the entity that owns/creates the tags or payload.",
+            "event.owner = \"2024.01.15...\".into()",
+        );
+    }
+    if is_sys_id(&ev.id) {
+        push_err(
+            errs,
+            "error",
+            intent,
+            "Event.Id",
+            "event_id",
+            "semantic",
+            &format!("Event.Id must not be $sys for {intent}; $sys is not an individual event."),
+            "Set Event.Id to the internal Event.Id of the pre-existing target event.",
+            "event.id = \"2024.01.15...\".into()",
+        );
+    }
+    if is_sys_id(&ev.unique_id) {
+        push_err(
+            errs,
+            "error",
+            intent,
+            "Event.UniqueId",
+            "unique_id",
+            "semantic",
+            &format!("Event.UniqueId must not be $sys for {intent}; $sys is not an individual event."),
+            "Set Event.UniqueId to the UniqueId of the pre-existing target event.",
+            "event.unique_id = \"my-event-uid\".into()",
+        );
+    }
+}
+
+fn validate_lookup_owner_not_used_event(
+    errs: &mut ValidationErrors,
+    intent: &str,
+    ev: &crate::message::types::EventFields,
+) {
+    if !ev.owner.is_empty() || !ev.owner_unique_id.is_empty() {
+        push_err(
+            errs,
+            "warn",
+            intent,
+            "Event.Owner/OwnerUniqueID",
+            "owner/owner_unique_id",
+            "semantic",
+            &format!("Owner fields are not used for {intent}; only Event.Id or Event.UniqueId identify the event."),
+            "Remove Event.Owner and Event.OwnerUniqueID; set Event.Id or Event.UniqueId instead.",
+            "event.id = \"2024.01.15...\".into()",
+        );
+    }
+}
+
+fn validate_lookup_owner_not_used_link(
+    errs: &mut ValidationErrors,
+    intent: &str,
+    lk: &crate::message::types::LinkFields,
+) {
+    if !lk.owner.is_empty() || !lk.owner_id.is_empty() || !lk.owner_unique_id.is_empty() {
+        push_err(
+            errs,
+            "warn",
+            intent,
+            "Link.Owner/OwnerID/OwnerUniqueID",
+            "owner/owner_event_id/owner_unique_id",
+            "semantic",
+            &format!("Owner fields are not used for {intent}; only Link.Id or Link.UniqueId identify the link event."),
+            "Remove owner fields; set link.id or link.unique_id.",
+            "link.id = \"link-event-id\".into()",
+        );
+    }
+}
+
+fn validate_create_event_id_set(errs: &mut ValidationErrors, intent: &str, field: &str, id_value: &str) {
+    if id_value.is_empty() {
+        return;
+    }
+    push_err(
+        errs,
+        "warn",
+        intent,
+        field,
+        "event_id",
+        "semantic",
+        &format!("{field} is set for {intent} but Event.Id is AIP-generated at storage time (time+location)."),
+        "Event.Id is AIP-generated at storage time; set Event.UniqueId for a developer-controlled identifier known before storage.",
+        "event.unique_id = \"my-event-uid\".into()",
+    );
+}
+
+fn validate_create_link_id_set(errs: &mut ValidationErrors, intent: &str, field: &str, id_value: &str) {
+    if id_value.is_empty() {
+        return;
+    }
+    push_err(
+        errs,
+        "warn",
+        intent,
+        field,
+        "event_id",
+        "semantic",
+        &format!("{field} is set for {intent} but link Event.Id is AIP-generated at storage time."),
+        "NeuralMemory.Link.Id is AIP-generated at storage time; set NeuralMemory.Link.UniqueId for a developer-controlled link identifier.",
+        "link.unique_id = \"my-link-uid\".into()",
+    );
+}
+
 fn required_field(
     errs: &mut ValidationErrors,
     intent: &str,
@@ -1661,4 +1933,173 @@ fn push_err(
         example_code: example_code.to_string(),
         references: Vec::new(),
     });
+}
+
+#[cfg(test)]
+mod semantic_tests {
+    use super::*;
+    use crate::message::intents;
+    use crate::message::types::{Envelope, EventFields, Message, NeuralMemoryFields, Tag, TagValue};
+
+    fn envelope_msg(intent: intents::Intent) -> Message {
+        Message {
+            envelope: Envelope {
+                to: "mem@zeroth.pod-os.com".into(),
+                from: "test@zeroth.pod-os.com".into(),
+                intent,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn has_rule(errs: &ValidationErrors, rule: &str) -> bool {
+        errs.iter().any(|e| e.rule == rule)
+    }
+
+    fn has_error(errs: &ValidationErrors) -> bool {
+        errs.iter().any(|e| e.severity == "error")
+    }
+
+    #[test]
+    fn store_batch_tags_rejects_sys_owner() {
+        std::env::set_var("PODOS_VALIDATE", "1");
+        let mut msg = envelope_msg(intents::STORE_BATCH_TAGS.clone());
+        msg.event = Some(EventFields {
+            id: "event-id".into(),
+            owner: "$sys".into(),
+            ..Default::default()
+        });
+        msg.neural_memory = Some(NeuralMemoryFields {
+            tags: vec![Tag {
+                key: "k".into(),
+                value: TagValue::Text("v".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let errs = msg.validate();
+        assert!(has_rule(&errs, "semantic"));
+    }
+
+    #[test]
+    fn store_data_rejects_sys_target() {
+        std::env::set_var("PODOS_VALIDATE", "1");
+        let mut msg = envelope_msg(intents::STORE_DATA.clone());
+        msg.event = Some(EventFields {
+            id: "$sys".into(),
+            owner_unique_id: "user-001".into(),
+            ..Default::default()
+        });
+        let errs = msg.validate();
+        assert!(has_rule(&errs, "semantic"));
+    }
+
+    #[test]
+    fn get_event_owner_not_used_warn() {
+        std::env::set_var("PODOS_VALIDATE", "1");
+        let mut msg = envelope_msg(intents::GET_EVENT.clone());
+        msg.event = Some(EventFields {
+            id: "2024.01.15...".into(),
+            owner: "$sys".into(),
+            ..Default::default()
+        });
+        let errs = msg.validate();
+        assert!(has_rule(&errs, "semantic"));
+    }
+
+    #[test]
+    fn store_batch_tags_valid_owner() {
+        std::env::set_var("PODOS_VALIDATE", "1");
+        let mut msg = envelope_msg(intents::STORE_BATCH_TAGS.clone());
+        msg.event = Some(EventFields {
+            id: "event-id".into(),
+            owner: "user-event-id".into(),
+            ..Default::default()
+        });
+        msg.neural_memory = Some(NeuralMemoryFields {
+            tags: vec![Tag {
+                key: "k".into(),
+                value: TagValue::Text("v".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let errs = msg.validate();
+        assert!(!has_error(&errs));
+    }
+
+    #[test]
+    fn store_event_warns_id_at_create() {
+        std::env::set_var("PODOS_VALIDATE", "1");
+        let mut msg = envelope_msg(intents::STORE_EVENT.clone());
+        msg.event = Some(EventFields {
+            owner: "$sys".into(),
+            id: "should-not-set".into(),
+            location: "TERRA".into(),
+            location_separator: "|".into(),
+            ..Default::default()
+        });
+        let errs = msg.validate();
+        assert!(has_rule(&errs, "semantic"));
+    }
+
+    #[test]
+    fn store_batch_tags_valid_unique_id_path() {
+        std::env::set_var("PODOS_VALIDATE", "1");
+        let mut msg = envelope_msg(intents::STORE_BATCH_TAGS.clone());
+        msg.event = Some(EventFields {
+            unique_id: "my-uid".into(),
+            owner: "user-event-id".into(),
+            ..Default::default()
+        });
+        msg.neural_memory = Some(NeuralMemoryFields {
+            tags: vec![Tag {
+                key: "category".into(),
+                value: TagValue::Text("value1".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let errs = msg.validate();
+        assert!(!has_error(&errs));
+    }
+
+    #[test]
+    fn store_data_valid_unique_id_owner() {
+        std::env::set_var("PODOS_VALIDATE", "1");
+        let mut msg = envelope_msg(intents::STORE_DATA.clone());
+        msg.event = Some(EventFields {
+            unique_id: "target-uid".into(),
+            owner_unique_id: "user-001".into(),
+            ..Default::default()
+        });
+        let errs = msg.validate();
+        assert!(!has_error(&errs));
+    }
+
+    #[test]
+    fn store_data_missing_target_id() {
+        std::env::set_var("PODOS_VALIDATE", "1");
+        let mut msg = envelope_msg(intents::STORE_DATA.clone());
+        msg.event = Some(EventFields {
+            owner_unique_id: "user-001".into(),
+            ..Default::default()
+        });
+        let errs = msg.validate();
+        assert!(has_rule(&errs, "one_of_required"));
+    }
+
+    #[test]
+    fn store_data_rejects_sys_owner() {
+        std::env::set_var("PODOS_VALIDATE", "1");
+        let mut msg = envelope_msg(intents::STORE_DATA.clone());
+        msg.event = Some(EventFields {
+            unique_id: "target-uid".into(),
+            owner: "$sys".into(),
+            ..Default::default()
+        });
+        let errs = msg.validate();
+        assert!(has_rule(&errs, "semantic"));
+    }
 }
