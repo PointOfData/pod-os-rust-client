@@ -340,6 +340,14 @@ mod tests {
     }
 
     #[test]
+    fn encode_gateway_disconnect_has_message_type_6() {
+        let msg = minimal_msg(&intents::GATEWAY_DISCONNECT);
+        let sm = encode_message(&msg, "test-uuid").unwrap();
+        let s = std::str::from_utf8(sm.as_bytes()).unwrap();
+        assert!(s.contains("000000006"));
+    }
+
+    #[test]
     fn encode_gateway_id_has_correct_prefix() {
         let msg = minimal_msg(&intents::GATEWAY_ID);
         let sm = encode_message(&msg, "test-uuid").unwrap();

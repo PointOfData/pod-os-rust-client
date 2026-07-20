@@ -240,6 +240,8 @@ let cfg = Config {
 
 `Client` sends periodic AIP `Keepalive` frames (message_type 18) on the primary connection and idle pooled connections. Configure `keepalive_interval`: `None` uses 30s, `Some(Duration::ZERO)` disables. The tokio interval task starts after authentication, pauses while disconnected/reconnecting, and stops on `close()`.
 
+On explicit close (`client.close().await`), the client sends a fire-and-forget AIP `GatewayDisconnect` frame (message_type 6) on the ID-authenticated primary connection, then closes the TCP socket. Unexpected connection loss and reconnect teardown do not send Disconnect. Unauthenticated pool sockets are closed without Disconnect because they never completed a GatewayId handshake.
+
 ## Actor Health Checks (Non-Neural Memory Actors)
 
 Neural Memory Actors are typically probed with store/get intents. **Socket Actors** use the lightweight AIP `StatusRequest` / `Status` pair instead:

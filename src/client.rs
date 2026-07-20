@@ -471,6 +471,25 @@ impl Client {
         self.send_without_response(&mut msg).await
     }
 
+    /// Send an app-level AIP GatewayDisconnect (message_type 6) on the primary connection.
+    pub async fn send_disconnect(&self) -> Result<(), GatewayDError> {
+        if !self.is_connected() {
+            return Ok(());
+        }
+        let mut msg = Message {
+            envelope: Envelope {
+                to: format!("$system@{}", self.gateway_actor_name),
+                from: format!("{}@{}", self.client_name, self.gateway_actor_name),
+                intent: intents::GATEWAY_DISCONNECT.clone(),
+                client_name: self.client_name.clone(),
+                message_id: Uuid::new_v4().to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        self.send_without_response(&mut msg).await
+    }
+
     pub fn is_connected(&self) -> bool {
         self.conn.is_connected()
     }
@@ -559,6 +578,12 @@ impl Client {
         remove_client_by_gateway_actor_name(&self.gateway_actor_name).await;
         if let Some(pool) = &self.pool {
             pool.close().await;
+        }
+        if let Err(e) = self.send_disconnect().await {
+            self.logger.warn(
+                "failed to send GatewayDisconnect before close",
+                &[("error", &e.message), ("actor", &self.gateway_actor_name)],
+            );
         }
         self.conn.close().await;
         Ok(())
@@ -1141,6 +1166,99 @@ impl Client {
             self.send_stream_on().await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod disconnect_tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpListener;
+
+    fn test_client(conn: Arc<ConnClient>, cfg: Config) -> Arc<Client> {
+        let logger: Arc<dyn Logger> = cfg
+            .logger
+            .clone()
+            .unwrap_or_else(|| Arc::new(NoOpLogger));
+        let gateway_actor_name = cfg.gateway_actor_name.clone();
+        let client_name = cfg.client_name.clone();
+        let (incoming_tx, _) = broadcast::channel(INCOMING_CHANNEL_CAPACITY);
+        Arc::new(Client {
+            conn,
+            pool: None,
+            cfg,
+            gateway_actor_name,
+            client_name,
+            key: "test-key".to_string(),
+            pending: DashMap::new(),
+            pending_raw: DashMap::new(),
+            incoming_tx,
+            receiver_active: AtomicBool::new(false),
+            receiver_shutdown: StdMutex::new(None),
+            keepalive_shutdown: StdMutex::new(None),
+            reconnecting: AtomicBool::new(false),
+            reconnect_attempt: AtomicUsize::new(0),
+            closed: AtomicBool::new(false),
+            reconnect_notify: Notify::new(),
+            state_handler: StdMutex::new(None),
+            logger,
+        })
+    }
+
+    #[tokio::test]
+    async fn close_sends_disconnect_before_tcp() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+        let (read_done_tx, read_done_rx) = tokio::sync::oneshot::channel();
+
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let _ = accepted_tx.send(());
+                let mut buf = vec![0u8; 4096];
+                if let Ok(n) = sock.read(&mut buf).await {
+                    let _ = read_done_tx.send(buf[..n].to_vec());
+                }
+            }
+        });
+
+        let retry = Arc::new(Retry::new(0, Duration::from_millis(10), 2.0, false));
+        let conn_cfg = ClientConfig {
+            logger: Arc::new(NoOpLogger),
+            ..Default::default()
+        };
+        let conn = ConnClient::connect(
+            "tcp",
+            &addr.ip().to_string(),
+            &addr.port().to_string(),
+            "test-actor",
+            retry,
+            conn_cfg,
+        )
+        .await
+        .expect("connect");
+
+        accepted_rx.await.expect("server accept");
+
+        let cfg = Config {
+            host: addr.ip().to_string(),
+            port: addr.port().to_string(),
+            client_name: "close-test-client".to_string(),
+            gateway_actor_name: "zeroth.pod-os.com".to_string(),
+            logger: Some(Arc::new(NoOpLogger)),
+            ..Default::default()
+        };
+
+        let client = test_client(conn, cfg);
+        client.close().await.expect("close");
+
+        let got = read_done_rx.await.expect("server read");
+        let wire = String::from_utf8_lossy(&got);
+        assert!(
+            wire.contains("000000006"),
+            "server did not receive GatewayDisconnect frame; got={wire}"
+        );
     }
 }
 

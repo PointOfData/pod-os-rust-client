@@ -19,6 +19,9 @@ pub fn construct_header(msg: &Message, intent: &Intent, _connection_id_uuid: &st
     if *intent == GATEWAY_STREAM_ON {
         return gateway_stream_on_header(msg);
     }
+    if *intent == GATEWAY_DISCONNECT {
+        return gateway_disconnect_header(msg);
+    }
     if *intent == ACTOR_ECHO {
         return actor_echo_header(msg);
     }
@@ -73,6 +76,12 @@ fn gateway_identify_connection_header(msg: &Message) -> String {
 }
 
 fn gateway_stream_on_header(msg: &Message) -> String {
+    let mut h = Header::new();
+    h.add_if_nonempty("_msg_id", &msg.envelope.message_id);
+    h.build()
+}
+
+fn gateway_disconnect_header(msg: &Message) -> String {
     let mut h = Header::new();
     h.add_if_nonempty("_msg_id", &msg.envelope.message_id);
     h.build()
