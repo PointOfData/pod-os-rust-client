@@ -25,6 +25,9 @@ pub fn construct_header(msg: &Message, intent: &Intent, _connection_id_uuid: &st
     if *intent == ACTOR_ECHO {
         return actor_echo_header(msg);
     }
+    if *intent == ACTOR_REQUEST {
+        return actor_request_header(msg);
+    }
     if *intent == STORE_EVENT {
         return store_event_message_header(msg);
     }
@@ -89,6 +92,13 @@ fn gateway_disconnect_header(msg: &Message) -> String {
 
 fn actor_echo_header(msg: &Message) -> String {
     let mut h = Header::new();
+    h.add_if_nonempty("_msg_id", &msg.envelope.message_id);
+    h.build()
+}
+
+fn actor_request_header(msg: &Message) -> String {
+    let mut h = Header::new();
+    h.add("_type", "status");
     h.add_if_nonempty("_msg_id", &msg.envelope.message_id);
     h.build()
 }

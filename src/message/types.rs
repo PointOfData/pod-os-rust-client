@@ -438,7 +438,10 @@ impl Message {
     }
 
     pub fn payload_data(&self) -> Option<&PayloadData> {
-        self.payload.as_ref().map(|p| &p.data)
+        if let Some(p) = self.payload.as_ref() {
+            return Some(&p.data);
+        }
+        self.event.as_ref().map(|e| &e.payload_data.data)
     }
 
     pub fn payload_mime_type(&self) -> &str {

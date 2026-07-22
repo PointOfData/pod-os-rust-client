@@ -127,6 +127,19 @@ pub fn decode_message(raw: &[u8]) -> Result<Message, DecodeError> {
 
     use intents::*;
     if intent == GET_EVENT || intent == GET_EVENT_RESPONSE {
+        // Match Go/Python: send_data blob lives on Message.payload (wire body).
+        if !payload_str.is_empty() {
+            let mime = header_map
+                .get("mime")
+                .or_else(|| header_map.get("_mimetype"))
+                .cloned()
+                .unwrap_or_default();
+            msg.payload = Some(PayloadFields {
+                data: PayloadData::Text(payload_str.clone()),
+                mime_type: mime,
+                ..Default::default()
+            });
+        }
         parse_get_event_response(&mut msg, &header_map, &payload_str);
     } else if intent == GET_EVENTS_FOR_TAGS || intent == GET_EVENTS_FOR_TAGS_RESPONSE {
         parse_get_events_for_tags_payload(&mut msg, &payload_str);
@@ -546,13 +559,9 @@ fn parse_get_event_response(msg: &mut Message, hm: &HashMap<String, String>, pay
         }
     }
 
-    // Payload-embedded links and (for send_data) the raw event data blob.
+    // Payload-embedded links (when get_links=Y). send_data blob stays on msg.payload.
     let mut links: Vec<LinkFields> = Vec::new();
     let mut link_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
-    // Any payload line that is not a recognized link/tag record is treated as the
-    // stored event data blob. With GetEvent.SendData=true (and no other options),
-    // the entire payload is the BLOB (Event.PayloadData.Data).
-    let mut data_lines: Vec<&str> = Vec::new();
 
     for line in payload.lines() {
         if line.is_empty() {
@@ -566,9 +575,7 @@ fn parse_get_event_response(msg: &mut Message, hm: &HashMap<String, String>, pay
                 link_tags.entry(link_id).or_default().push(t);
             }
         } else if line.starts_with("_targettag") {
-            // target tag record; not surfaced here, but not part of the data blob
-        } else {
-            data_lines.push(line);
+            // target tag record; not surfaced here
         }
     }
 
@@ -582,13 +589,6 @@ fn parse_get_event_response(msg: &mut Message, hm: &HashMap<String, String>, pay
     // Apply to event
     let event = msg.event.get_or_insert_with(EventFields::default);
     event.tags = tags;
-    // Surface the stored data blob, if any.
-    if !data_lines.is_empty() {
-        event.payload_data.data = PayloadData::Text(data_lines.join("\n"));
-        if let Some(mime) = hm.get("mime") {
-            event.payload_data.mime_type = mime.clone();
-        }
-    }
     // Populate unique_id_a from parent event's unique_id (links are stored on the source event)
     let event_uid = event.unique_id.clone();
     for link in &mut links {
@@ -878,6 +878,28 @@ mod tests {
         assert_eq!(events[0].links.len(), 1);
         assert_eq!(events[0].links[0].unique_id_a, "src_uid");
         assert_eq!(events[0].links[0].unique_id_b, "tgt_uid");
+    }
+
+    #[test]
+    fn get_event_response_send_data_on_message_payload() {
+        let payload = "Overmatch Contact Careers\nDelivering the warfighter edge";
+        let hm = HashMap::new();
+        let mut msg = Message {
+            event: Some(EventFields {
+                unique_id: "page:job:0".to_string(),
+                ..Default::default()
+            }),
+            payload: Some(PayloadFields {
+                data: PayloadData::Text(payload.to_string()),
+                mime_type: "text/plain".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        parse_get_event_response(&mut msg, &hm, payload);
+
+        let blob = msg.payload_data();
+        assert!(matches!(blob, Some(PayloadData::Text(s)) if s.contains("Overmatch")));
     }
 
     #[test]
