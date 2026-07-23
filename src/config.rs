@@ -126,8 +126,9 @@ pub struct Config {
     /// Bounds each background receive iteration in concurrent mode. Zero uses default (30s).
     pub receive_loop_timeout: Duration,
 
-    /// Liveness backstop when requests are pending but no frame received. Zero uses default (90s).
-    pub connection_liveness_timeout: Duration,
+    /// Liveness backstop when requests are pending but no frame received.
+    /// None uses default (90s). Some(Duration::ZERO) disables the backstop.
+    pub connection_liveness_timeout: Option<Duration>,
 
     /// TCP keepalive idle time. Zero uses connection-layer default (15s).
     pub tcp_keep_alive_idle: Duration,
@@ -175,7 +176,7 @@ impl Default for Config {
             keepalive_interval: None,
             skip_global_registry: false,
             receive_loop_timeout: Duration::ZERO,
-            connection_liveness_timeout: Duration::ZERO,
+            connection_liveness_timeout: None,
             tcp_keep_alive_idle: Duration::ZERO,
             tcp_keep_alive_interval: Duration::ZERO,
             tcp_keep_alive_count: 0,
@@ -214,11 +215,13 @@ impl Config {
         }
     }
 
+    /// Returns the configured liveness backstop or the default.
+    /// Returns [`Duration::ZERO`] when the backstop is explicitly disabled.
     pub fn connection_liveness_timeout(&self) -> Duration {
-        if self.connection_liveness_timeout.is_zero() {
-            Duration::from_secs(90)
-        } else {
-            self.connection_liveness_timeout
+        match self.connection_liveness_timeout {
+            None => Duration::from_secs(90),
+            Some(d) if d.is_zero() => Duration::ZERO,
+            Some(d) => d,
         }
     }
 }
@@ -239,6 +242,26 @@ mod keepalive_tests {
         let mut cfg = Config::default();
         cfg.keepalive_interval = Some(Duration::ZERO);
         assert_eq!(cfg.keepalive_interval(), Duration::ZERO);
+    }
+
+    #[test]
+    fn config_default_connection_liveness_timeout() {
+        let cfg = Config::default();
+        assert_eq!(cfg.connection_liveness_timeout(), Duration::from_secs(90));
+    }
+
+    #[test]
+    fn config_custom_connection_liveness_timeout() {
+        let mut cfg = Config::default();
+        cfg.connection_liveness_timeout = Some(Duration::from_secs(15));
+        assert_eq!(cfg.connection_liveness_timeout(), Duration::from_secs(15));
+    }
+
+    #[test]
+    fn config_disabled_connection_liveness_timeout() {
+        let mut cfg = Config::default();
+        cfg.connection_liveness_timeout = Some(Duration::ZERO);
+        assert_eq!(cfg.connection_liveness_timeout(), Duration::ZERO);
     }
 
     #[test]

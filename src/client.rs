@@ -944,7 +944,10 @@ impl Client {
                 // and have heard nothing for too long (liveness backstop).
                 Err(ref e) if e.is_idle_timeout() => {
                     let pending = self.pending.len() + self.pending_raw.len();
-                    if pending == 0 || last_activity.elapsed() <= liveness_timeout {
+                    if liveness_timeout.is_zero()
+                        || pending == 0
+                        || last_activity.elapsed() <= liveness_timeout
+                    {
                         continue;
                     }
                     self.logger.error(

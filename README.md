@@ -242,6 +242,10 @@ let cfg = Config {
 
 On explicit close (`client.close().await`), the client sends a fire-and-forget AIP `GatewayDisconnect` frame (message_type 6) on the ID-authenticated primary connection, then closes the TCP socket. Unexpected connection loss and reconnect teardown do not send Disconnect. Unauthenticated pool sockets are closed without Disconnect because they never completed a GatewayId handshake.
 
+## Connection Liveness
+
+In concurrent mode the receive loop polls with a short idle timeout (default **30s**). Idle timeouts are benign — the connection is still considered healthy. If requests are pending but no frame has been received for `connection_liveness_timeout` (default **90s**), the connection is declared dead and reconnect runs when enabled. Set `connection_liveness_timeout: Some(Duration::ZERO)` to disable this backstop.
+
 ## Actor Health Checks (Non-Neural Memory Actors)
 
 Neural Memory Actors are typically probed with store/get intents. **Socket Actors** use the lightweight AIP `StatusRequest` / `Status` pair instead:
