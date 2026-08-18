@@ -240,11 +240,28 @@ let cfg = Config {
 
 `Client` sends periodic AIP `Keepalive` frames (message_type 18) on the primary connection and idle pooled connections. Configure `keepalive_interval`: `None` uses 30s, `Some(Duration::ZERO)` disables. The tokio interval task starts after authentication, pauses while disconnected/reconnecting, and stops on `close()`.
 
-On explicit close (`client.close().await`), the client sends a fire-and-forget AIP `GatewayDisconnect` frame (message_type 6) on the ID-authenticated primary connection, then closes the TCP socket. Unexpected connection loss and reconnect teardown do not send Disconnect. Unauthenticated pool sockets are closed without Disconnect because they never completed a GatewayId handshake.
+On explicit close (`client.close().await`), the client sends a fire-and-forget AIP `GatewayDisconnect` frame (message_type 6) on the ID-authenticated primary connection, then closes the TCP socket. Reconnect also sends Disconnect when the prior socket is still writable. Abrupt connection loss may not be able to send Disconnect. Unauthenticated pool sockets are closed without Disconnect because they never completed a GatewayId handshake.
 
 ## Connection Liveness
 
-In concurrent mode the receive loop polls with a short idle timeout (default **30s**). Idle timeouts are benign — the connection is still considered healthy. If requests are pending but no frame has been received for `connection_liveness_timeout` (default **90s**), the connection is declared dead and reconnect runs when enabled. Set `connection_liveness_timeout: Some(Duration::ZERO)` to disable this backstop.
+In concurrent mode the receive loop treats idle read timeouts as benign. Long-running
+requests no longer trigger reconnect solely because no inbound frame arrived.
+
+Instead, a background task sends periodic **`StatusRequest`** probes (message_type 110)
+to `$system@<gateway>`. Configure:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `liveness_probe_interval` | 30s | Time between probes when no recent inbound traffic |
+| `liveness_probe_timeout` | 5s | Per-probe response wait |
+| `liveness_probe_max_failures` | 3 | Consecutive failures before reconnect |
+| `connection_liveness_timeout` | enabled | Set `Some(Duration::ZERO)` to disable probes |
+
+Keepalive frames (type 18) remain a cheap outbound heartbeat but are not used as the
+death detector because they do not wait for a reply.
+
+On reconnect, the client sends **`GatewayDisconnect`** on the old socket when still
+writable before opening a new TCP connection and re-sending `GatewayId`.
 
 ## Actor Health Checks (Non-Neural Memory Actors)
 

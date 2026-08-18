@@ -11,10 +11,10 @@
 
 use std::{
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex as StdMutex,
     },
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use dashmap::DashMap;
@@ -38,8 +38,12 @@ use crate::{
     },
 };
 
-/// Liveness backstop fallback when config is unavailable.
-const DEFAULT_CONNECTION_LIVENESS_TIMEOUT: Duration = Duration::from_secs(90);
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 // ── Connection state ──────────────────────────────────────────────────────────
 
@@ -156,6 +160,11 @@ pub struct Client {
     /// std::sync::Mutex so `start_receiver` can lock from sync context.
     receiver_shutdown: StdMutex<Option<ShutdownTx>>,
     keepalive_shutdown: StdMutex<Option<ShutdownTx>>,
+    liveness_shutdown: StdMutex<Option<ShutdownTx>>,
+
+    /// Milliseconds since UNIX epoch of last inbound frame (for liveness skip).
+    last_inbound_ms: Arc<AtomicU64>,
+    liveness_probe_failures: AtomicUsize,
 
     // Reconnection state
     reconnecting: AtomicBool,
@@ -205,13 +214,21 @@ impl Client {
 
         let key = format!("{}:{}", cfg.client_name, cfg.gateway_actor_name);
         if !cfg.skip_global_registry {
-            // Return existing connected client, or remove stale disconnected entry
             if let Some(existing) = CLIENT_REGISTRY.read().await.get(&key).cloned() {
-                if existing.is_connected() {
+                if existing.is_connected() && !existing.is_reconnecting() {
                     return Ok(existing);
                 }
-                CLIENT_REGISTRY.write().await.remove(&key);
-                ACTOR_REGISTRY.write().await.remove(&key);
+                if existing.is_reconnecting() {
+                    existing.wait_for_reconnect().await;
+                    if existing.is_connected() {
+                        return Ok(existing);
+                    }
+                    CLIENT_REGISTRY.write().await.remove(&key);
+                    ACTOR_REGISTRY.write().await.remove(&key);
+                } else if !existing.is_connected() {
+                    CLIENT_REGISTRY.write().await.remove(&key);
+                    ACTOR_REGISTRY.write().await.remove(&key);
+                }
             }
         }
 
@@ -294,6 +311,8 @@ impl Client {
             None
         };
 
+        let last_inbound_ms = Arc::new(AtomicU64::new(now_millis()));
+
         let client = Arc::new(Self {
             conn,
             pool,
@@ -307,6 +326,9 @@ impl Client {
             receiver_active: AtomicBool::new(false),
             receiver_shutdown: StdMutex::new(None),
             keepalive_shutdown: StdMutex::new(None),
+            liveness_shutdown: StdMutex::new(None),
+            last_inbound_ms: Arc::clone(&last_inbound_ms),
+            liveness_probe_failures: AtomicUsize::new(0),
             reconnecting: AtomicBool::new(false),
             reconnect_attempt: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
@@ -326,6 +348,7 @@ impl Client {
         }
 
         client.start_keepalive_loop();
+        client.start_liveness_probe_loop();
 
         if client.cfg.skip_global_registry {
             client.logger.info(
@@ -496,6 +519,10 @@ impl Client {
     pub fn client_name(&self) -> &str {
         &self.client_name
     }
+    /// Sender routing identity for messages on this connection: `{client}@{gateway}`.
+    pub fn from_address(&self) -> String {
+        format!("{}@{}", self.client_name, self.gateway_actor_name)
+    }
     pub fn actor_name(&self) -> &str {
         &self.gateway_actor_name
     }
@@ -505,6 +532,18 @@ impl Client {
     pub fn reconnect_attempt(&self) -> usize {
         self.reconnect_attempt.load(Ordering::Acquire)
     }
+
+    /// Blocks until an in-flight reconnect completes. Returns `true` if connected afterward.
+    pub async fn wait_until_connected(&self) -> bool {
+        if self.is_connected() && !self.is_reconnecting() {
+            return true;
+        }
+        if self.is_reconnecting() {
+            self.wait_for_reconnect().await;
+        }
+        self.is_connected()
+    }
+
     pub fn is_receiver_active(&self) -> bool {
         self.receiver_active.load(Ordering::Acquire)
     }
@@ -575,6 +614,7 @@ impl Client {
         self.reconnect_notify.notify_waiters();
         self.stop_receiver();
         self.stop_keepalive_loop();
+        self.stop_liveness_probe_loop();
         remove_client_by_gateway_actor_name(&self.gateway_actor_name).await;
         if let Some(pool) = &self.pool {
             pool.close().await;
@@ -646,6 +686,137 @@ impl Client {
         };
         if let Some(tx) = tx {
             let _ = tx.send(());
+        }
+    }
+
+    fn start_liveness_probe_loop(self: &Arc<Self>) {
+        if !self.cfg.enable_concurrent_mode || !self.cfg.liveness_probes_enabled() {
+            return;
+        }
+
+        self.stop_liveness_probe_loop();
+
+        let interval = self.cfg.liveness_probe_interval();
+        let (tx, mut rx) = broadcast::channel::<()>(1);
+        {
+            let mut guard = self
+                .liveness_shutdown
+                .lock()
+                .expect("liveness_shutdown poisoned");
+            *guard = Some(tx);
+        }
+
+        let this = self.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.tick().await;
+            loop {
+                tokio::select! {
+                    result = rx.recv() => {
+                        if result.is_err() {
+                            break;
+                        }
+                    }
+                    _ = ticker.tick() => {
+                        if this.closed.load(Ordering::Acquire)
+                            || !this.is_connected()
+                            || this.is_reconnecting()
+                            || !this.receiver_active.load(Ordering::Acquire)
+                        {
+                            continue;
+                        }
+
+                        let probe_interval_ms = interval.as_millis() as u64;
+                        let last_ms = this.last_inbound_ms.load(Ordering::Acquire);
+                        let elapsed_ms = now_millis().saturating_sub(last_ms);
+                        if elapsed_ms < probe_interval_ms {
+                            continue;
+                        }
+
+                        match this.send_liveness_probe().await {
+                            Ok(()) => {
+                                this.liveness_probe_failures.store(0, Ordering::Release);
+                            }
+                            Err(e) => {
+                                let failures = this
+                                    .liveness_probe_failures
+                                    .fetch_add(1, Ordering::AcqRel)
+                                    + 1;
+                                this.logger.warn(
+                                    "liveness probe failed",
+                                    &[
+                                        ("error", &e.message),
+                                        ("failures", &failures),
+                                        ("max", &this.cfg.liveness_probe_max_failures()),
+                                    ],
+                                );
+                                if failures >= this.cfg.liveness_probe_max_failures() {
+                                    this.handle_connection_lost(&e);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    fn stop_liveness_probe_loop(&self) {
+        let tx = {
+            let mut guard = self
+                .liveness_shutdown
+                .lock()
+                .expect("liveness_shutdown poisoned");
+            guard.take()
+        };
+        if let Some(tx) = tx {
+            let _ = tx.send(());
+        }
+    }
+
+    /// Application-level liveness probe: STATUS_REQUEST to the gateway system actor.
+    async fn send_liveness_probe(&self) -> Result<(), GatewayDError> {
+        let mut msg = Message {
+            envelope: Envelope {
+                to: format!("$system@{}", self.gateway_actor_name),
+                from: format!("{}@{}", self.client_name, self.gateway_actor_name),
+                intent: intents::STATUS_REQUEST.clone(),
+                client_name: self.client_name.clone(),
+                message_id: Uuid::new_v4().to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let timeout = self.cfg.liveness_probe_timeout();
+        let result = tokio::time::timeout(timeout, self.send_message(&mut msg)).await;
+
+        match result {
+            Ok(Ok(resp)) if resp.processing_status() != "ERROR" => Ok(()),
+            Ok(Ok(resp)) => Err(GatewayDError::new(
+                ErrCode::GatewayDisconnected,
+                format!(
+                    "liveness probe rejected: {}",
+                    resp.processing_message()
+                ),
+            )),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(GatewayDError::new(
+                ErrCode::GatewayTimeout,
+                "liveness probe timed out",
+            )),
+        }
+    }
+
+    async fn teardown_before_reconnect(&self) {
+        if self.conn.is_connected() {
+            if let Err(e) = self.send_disconnect().await {
+                self.logger.warn(
+                    "failed to send GatewayDisconnect before reconnect",
+                    &[("error", &e.message), ("actor", &self.gateway_actor_name)],
+                );
+            }
         }
     }
 
@@ -721,12 +892,7 @@ impl Client {
     // ── Internal send paths ───────────────────────────────────────────────────
 
     fn autocorrect_envelope(&self, msg: &mut Message) {
-        if msg.envelope.client_name.is_empty() {
-            msg.envelope.client_name = self.client_name.clone();
-        }
-        if msg.envelope.from.is_empty() {
-            msg.envelope.from = format!("{}@{}", self.client_name, self.gateway_actor_name);
-        }
+        normalize_message_from(&self.client_name, &self.gateway_actor_name, msg);
         if msg.envelope.message_id.is_empty() {
             msg.envelope.message_id = Uuid::new_v4().to_string();
         }
@@ -928,11 +1094,7 @@ impl Client {
     }
 
     async fn receive_loop(self: &Arc<Self>, mut shutdown: tokio::sync::broadcast::Receiver<()>) {
-        // Liveness backstop: if requests are pending but no frame arrives for
-        // this long, the connection is dead even without a hard TCP error.
-        let mut last_activity = std::time::Instant::now();
         let loop_timeout = self.cfg.receive_loop_timeout();
-        let liveness_timeout = self.cfg.connection_liveness_timeout();
         loop {
             let raw = tokio::select! {
                 _ = shutdown.recv() => break,
@@ -940,23 +1102,9 @@ impl Client {
             };
 
             match raw {
-                // Benign idle timeout: still alive unless we have pending requests
-                // and have heard nothing for too long (liveness backstop).
-                Err(ref e) if e.is_idle_timeout() => {
-                    let pending = self.pending.len() + self.pending_raw.len();
-                    if liveness_timeout.is_zero()
-                        || pending == 0
-                        || last_activity.elapsed() <= liveness_timeout
-                    {
-                        continue;
-                    }
-                    self.logger.error(
-                        "liveness timeout: pending requests with no frames received; treating connection as dead",
-                        &[("error", &e.message)],
-                    );
-                    self.handle_connection_lost(e);
-                    break;
-                }
+                // Benign idle timeout — connection may still be healthy; liveness probes
+                // (not pending-frame heuristics) decide when to reconnect.
+                Err(ref e) if e.is_idle_timeout() => continue,
 
                 // Everything else from the hardened transport is fatal: fail all
                 // in-flight callers fast, then reconnect.
@@ -968,7 +1116,7 @@ impl Client {
                 }
 
                 Ok(raw) => {
-                    last_activity = std::time::Instant::now();
+                    self.last_inbound_ms.store(now_millis(), Ordering::Release);
                     match decode_message(&raw) {
                         Err(e) => {
                             self.logger
@@ -1053,10 +1201,14 @@ impl Client {
                 break;
             }
 
+            self.teardown_before_reconnect().await;
+
             match self.conn.reconnect().await {
                 Ok(()) => match self.re_authenticate().await {
                     Ok(()) => {
                         success = true;
+                        self.last_inbound_ms.store(now_millis(), Ordering::Release);
+                        self.liveness_probe_failures.store(0, Ordering::Release);
                         break;
                     }
                     Err(e) => {
@@ -1081,6 +1233,7 @@ impl Client {
         if success {
             self.emit_state(ConnectionState::Connected, None);
             self.start_receiver();
+            self.start_liveness_probe_loop();
         } else {
             self.emit_state(ConnectionState::ReconnectFailed, last_err.as_ref());
         }
@@ -1132,10 +1285,14 @@ impl Client {
                 break;
             }
 
+            self.teardown_before_reconnect().await;
+
             match self.conn.reconnect().await {
                 Ok(()) => match self.re_authenticate().await {
                     Ok(()) => {
                         success = true;
+                        self.last_inbound_ms.store(now_millis(), Ordering::Release);
+                        self.liveness_probe_failures.store(0, Ordering::Release);
                         break;
                     }
                     Err(e) => {
@@ -1172,6 +1329,60 @@ impl Client {
     }
 }
 
+/// Ensure envelope `client_name` and `from` use the connection gateway identity.
+/// Matches Go SDK `normalizeMessageFrom`.
+fn normalize_message_from(client_name: &str, gateway_actor_name: &str, msg: &mut Message) {
+    if msg.envelope.client_name != client_name {
+        msg.envelope.client_name = client_name.to_string();
+    }
+    let expected_from = format!("{client_name}@{gateway_actor_name}");
+    if msg.envelope.from != expected_from {
+        msg.envelope.from = expected_from;
+    }
+}
+
+#[cfg(test)]
+mod from_tests {
+    use super::*;
+    use crate::message::{Envelope, Message};
+
+    #[test]
+    fn normalize_message_from_uses_connection_gateway() {
+        let mut msg = Message {
+            envelope: Envelope {
+                to: "kb@skills.pod-os.com".to_string(),
+                from: "other@skills.pod-os.com".to_string(),
+                intent: intents::GET_EVENT.clone(),
+                client_name: "other".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        normalize_message_from("my-client", "zeroth.pod-os.com", &mut msg);
+
+        assert_eq!(msg.envelope.client_name, "my-client");
+        assert_eq!(msg.envelope.from, "my-client@zeroth.pod-os.com");
+    }
+
+    #[test]
+    fn normalize_message_from_fills_empty_from() {
+        let mut msg = Message {
+            envelope: Envelope {
+                to: "kb@skills.pod-os.com".to_string(),
+                from: String::new(),
+                intent: intents::GET_EVENT.clone(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        normalize_message_from("my-client", "skills.pod-os.com", &mut msg);
+
+        assert_eq!(msg.envelope.from, "my-client@skills.pod-os.com");
+    }
+}
+
 #[cfg(test)]
 mod disconnect_tests {
     use super::*;
@@ -1200,6 +1411,9 @@ mod disconnect_tests {
             receiver_active: AtomicBool::new(false),
             receiver_shutdown: StdMutex::new(None),
             keepalive_shutdown: StdMutex::new(None),
+            liveness_shutdown: StdMutex::new(None),
+            last_inbound_ms: Arc::new(AtomicU64::new(now_millis())),
+            liveness_probe_failures: AtomicUsize::new(0),
             reconnecting: AtomicBool::new(false),
             reconnect_attempt: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
