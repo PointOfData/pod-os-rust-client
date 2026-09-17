@@ -1,9 +1,9 @@
 [package]
 name        = "pod-os-client"
-version     = "0.1.0"
+version     = "0.2.0"
 edition     = "2021"
 rust-version = "1.75"
-description  = "High-performance async Rust client for the Pod-OS Gateway"
+description  = "High-performance Rust client for the Pod-OS Gateway"
 repository   = "https://github.com/PointOfData/pod-os-rust-client"
 homepage     = "https://github.com/PointOfData/pod-os-rust-client"
 documentation = "https://docs.rs/pod-os-client"
