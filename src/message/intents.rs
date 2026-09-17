@@ -209,7 +209,16 @@ pub fn intent_from_message_type_and_command(
             return Some(&GET_EVENTS_FOR_TAGS_RESPONSE);
         }
     }
-    BY_MESSAGE_TYPE.get(&message_type).copied()
+    if let Some(i) = BY_MESSAGE_TYPE.get(&message_type) {
+        return Some(i);
+    }
+    // ENM MEM replies may carry the event type in `_type` (e.g. `iris:task_result`) while
+    // `_db_cmd=store` holds the neural-memory command. When command lookup still fails,
+    // decode as StoreEventResponse so the frame can be correlated (Go parity).
+    if message_type == STORE_EVENT_RESPONSE.message_type {
+        return Some(&STORE_EVENT_RESPONSE);
+    }
+    None
 }
 
 /// Resolve from a routing command string (e.g. `"MEM_REQ"`).

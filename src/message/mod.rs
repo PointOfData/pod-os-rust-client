@@ -1,3 +1,4 @@
+pub mod batch_status;
 pub mod constants;
 pub mod decoder;
 pub mod encoder;
@@ -9,7 +10,8 @@ pub mod types;
 pub mod utils;
 pub mod validate;
 
-pub use decoder::{decode_message, replace_from_in_raw_message};
+pub use batch_status::{batch_events_failed, batch_links_failed};
+pub use decoder::{decode_message, header_map_from_raw, replace_from_in_raw_message};
 pub use encoder::{
     encode_message, format_batch_events_payload, format_batch_link_events_payload,
     format_batch_tags_payload, serialize_tag_value,

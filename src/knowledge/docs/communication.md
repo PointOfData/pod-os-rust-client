@@ -20,6 +20,14 @@ Actor may be rebuffed). An Actor reacts to other Actors by examining the content
 
 The Pod-OS model is concurrent, distributed processing. Each Gateway manages multiple local Actors, each of which runs independently of the Gateway process. Gateways mediate message traffic between multiple native processes. Messages are transferred between tasks using a queued message system, and messages are transferred between Gateways, Actors, and applications using the same message structures. Gateway provisions allow for non-continuously connected Actors to receive messages; messages may be stored in a mailbox which is then transmitted to a process when it makes a connection with the Actor hosting the mailbox. Messages not only carry information, but in keeping with the event-oriented concept design of Pod-OS, each message retains an audit trail recording all Gateways and Actors through which it has passed, and a reply will contain a wormhole route for return path processing. While useful for audit trails or historical analysis, trails can also be used to prevent unwanted closed processing loops in large concurrent systems.
 
+### Connect to a hosted gateway
+
+1. Dial the **chosen** gateway's TCP endpoint (`host:62312`).
+2. Set `gateway_actor_name` to **that gateway's FQN** (the connection gateway you dialed).
+3. Use a unique `client_name` per TCP connection. Set `From = client_name@<dialed-gateway-FQN>`.
+4. Omit `passcode` / `user_name` unless that gateway's INI requires them. Not Auth0 credentials.
+5. If `GatewayId` succeeds but a request times out, check unique `client_name` and `From` — reply routing, not auth.
+
 ### Connecting (Rust)
 
 ```rust

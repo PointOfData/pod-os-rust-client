@@ -33,7 +33,7 @@ use crate::{
     errors::{ErrCode, GatewayDError},
     log::{Level, Logger, NoOpLogger, TracingLogger},
     message::{
-        decode_message, encode_message, intents,
+        decode_message, encode_message, header_map_from_raw, intents,
         types::{Envelope, Message, SocketMessage},
     },
 };
@@ -130,6 +130,47 @@ async fn register_client(client: Arc<Client>) -> Result<(), GatewayDError> {
 type ResponseSender = oneshot::Sender<Result<Arc<Message>, GatewayDError>>;
 type ResponseSenderRaw = oneshot::Sender<Result<(Arc<Message>, Vec<u8>), GatewayDError>>;
 
+/// Metadata stored with each in-flight concurrent request.
+struct PendingEntry {
+    tx: ResponseSender,
+    /// StoreEvent `unique_id` for fallback correlation when `_msg_id` is missing on MEM_REPLY.
+    store_unique_id: Option<String>,
+}
+
+struct PendingEntryRaw {
+    tx: ResponseSenderRaw,
+    store_unique_id: Option<String>,
+}
+
+/// Removes the pending entry on drop unless disarmed (response delivered by receiver).
+struct PendingGuard {
+    pending: Arc<DashMap<String, PendingEntry>>,
+    id: String,
+    armed: bool,
+}
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.pending.remove(&self.id);
+        }
+    }
+}
+
+struct PendingRawGuard {
+    pending: Arc<DashMap<String, PendingEntryRaw>>,
+    id: String,
+    armed: bool,
+}
+
+impl Drop for PendingRawGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.pending.remove(&self.id);
+        }
+    }
+}
+
 // ── Shutdown signal ───────────────────────────────────────────────────────────
 
 /// Sent to the receiver task to request graceful shutdown.
@@ -149,8 +190,8 @@ pub struct Client {
     key: String,
 
     // Concurrent mode: lock-free pending maps
-    pending: DashMap<String, ResponseSender>,
-    pending_raw: DashMap<String, ResponseSenderRaw>,
+    pending: Arc<DashMap<String, PendingEntry>>,
+    pending_raw: Arc<DashMap<String, PendingEntryRaw>>,
 
     /// Broadcast channel for unsolicited (push) messages from the gateway.
     /// Subscribe with `subscribe_incoming()` to receive actor requests.
@@ -320,8 +361,8 @@ impl Client {
             client_name: cfg.client_name.clone(),
             key,
             cfg,
-            pending: DashMap::new(),
-            pending_raw: DashMap::new(),
+            pending: Arc::new(DashMap::new()),
+            pending_raw: Arc::new(DashMap::new()),
             incoming_tx,
             receiver_active: AtomicBool::new(false),
             receiver_shutdown: StdMutex::new(None),
@@ -439,7 +480,7 @@ impl Client {
 
     /// Send a message and await its response.
     pub async fn send_message(&self, msg: &mut Message) -> Result<Arc<Message>, GatewayDError> {
-        self.autocorrect_envelope(msg);
+        self.autocorrect_envelope(msg)?;
         if self.receiver_active.load(Ordering::Acquire) {
             self.send_concurrent(msg).await
         } else {
@@ -452,7 +493,7 @@ impl Client {
         &self,
         msg: &mut Message,
     ) -> Result<(Arc<Message>, Vec<u8>), GatewayDError> {
-        self.autocorrect_envelope(msg);
+        self.autocorrect_envelope(msg)?;
         if self.receiver_active.load(Ordering::Acquire) {
             self.send_concurrent_raw(msg).await
         } else {
@@ -467,7 +508,7 @@ impl Client {
     /// the gateway routes the message to the target actor but does not send
     /// a delivery receipt back to the sender.
     pub async fn send_without_response(&self, msg: &mut Message) -> Result<(), GatewayDError> {
-        self.autocorrect_envelope(msg);
+        self.autocorrect_envelope(msg)?;
         let encoded = encode_message(msg, "")
             .map_err(|e| GatewayDError::new(ErrCode::ClientSendFailed, format!("encode: {e}")))?;
         self.conn.send(encoded.as_bytes()).await
@@ -546,6 +587,11 @@ impl Client {
 
     pub fn is_receiver_active(&self) -> bool {
         self.receiver_active.load(Ordering::Acquire)
+    }
+
+    /// Count of in-flight concurrent RPCs awaiting a gateway reply.
+    pub fn in_flight_request_count(&self) -> usize {
+        self.pending.len() + self.pending_raw.len()
     }
 
     /// Registers a callback that fires on every connection state transition.
@@ -891,11 +937,12 @@ impl Client {
 
     // ── Internal send paths ───────────────────────────────────────────────────
 
-    fn autocorrect_envelope(&self, msg: &mut Message) {
-        normalize_message_from(&self.client_name, &self.gateway_actor_name, msg);
+    fn autocorrect_envelope(&self, msg: &mut Message) -> Result<(), GatewayDError> {
+        normalize_message_from(&self.client_name, &self.gateway_actor_name, msg)?;
         if msg.envelope.message_id.is_empty() {
             msg.envelope.message_id = Uuid::new_v4().to_string();
         }
+        Ok(())
     }
 
     async fn send_sync(&self, msg: &Message) -> Result<Message, GatewayDError> {
@@ -966,11 +1013,22 @@ impl Client {
     async fn send_concurrent(&self, msg: &Message) -> Result<Arc<Message>, GatewayDError> {
         let id = msg.envelope.message_id.clone();
         let (tx, rx) = oneshot::channel::<Result<Arc<Message>, GatewayDError>>();
-        self.pending.insert(id.clone(), tx);
+        let store_unique_id = Self::store_event_unique_id(msg);
+        self.pending.insert(
+            id.clone(),
+            PendingEntry {
+                tx,
+                store_unique_id,
+            },
+        );
+        let mut guard = PendingGuard {
+            pending: Arc::clone(&self.pending),
+            id: id.clone(),
+            armed: true,
+        };
 
         if !self.conn.is_connected() && self.cfg.reconnect_config.is_enabled() {
             if !self.wait_for_reconnect().await {
-                self.pending.remove(&id);
                 return Err(GatewayDError::new(
                     ErrCode::GatewayDisconnected,
                     "connection to gateway was lost during request",
@@ -981,7 +1039,6 @@ impl Client {
         let encoded = match encode_message(msg, "") {
             Ok(e) => e,
             Err(e) => {
-                self.pending.remove(&id);
                 return Err(GatewayDError::new(
                     ErrCode::ClientSendFailed,
                     format!("encode: {e}"),
@@ -989,22 +1046,26 @@ impl Client {
             }
         };
         if let Err(e) = self.conn.send(encoded.as_bytes()).await {
-            self.pending.remove(&id);
             return Err(e);
         }
 
-        tokio::time::timeout(self.cfg.response_timeout, rx)
+        let result = tokio::time::timeout(self.cfg.response_timeout, rx)
             .await
             .map_err(|_| {
-                self.pending.remove(&id);
-                GatewayDError::new(ErrCode::GatewayTimeout, "response timeout")
+                GatewayDError::new(
+                    ErrCode::GatewayTimeout,
+                    format!("response timeout{}", GatewayDError::REPLY_ROUTING_TIMEOUT_HINT),
+                )
             })?
             .map_err(|_| {
                 GatewayDError::new(
                     ErrCode::GatewayDisconnected,
                     "response channel closed: sender dropped (connection lost or receiver stopped)",
                 )
-            })?
+            })?;
+
+        guard.armed = false;
+        result
     }
 
     async fn send_concurrent_raw(
@@ -1013,11 +1074,22 @@ impl Client {
     ) -> Result<(Arc<Message>, Vec<u8>), GatewayDError> {
         let id = msg.envelope.message_id.clone();
         let (tx, rx) = oneshot::channel::<Result<(Arc<Message>, Vec<u8>), GatewayDError>>();
-        self.pending_raw.insert(id.clone(), tx);
+        let store_unique_id = Self::store_event_unique_id(msg);
+        self.pending_raw.insert(
+            id.clone(),
+            PendingEntryRaw {
+                tx,
+                store_unique_id,
+            },
+        );
+        let mut guard = PendingRawGuard {
+            pending: Arc::clone(&self.pending_raw),
+            id: id.clone(),
+            armed: true,
+        };
 
         if !self.conn.is_connected() && self.cfg.reconnect_config.is_enabled() {
             if !self.wait_for_reconnect().await {
-                self.pending_raw.remove(&id);
                 return Err(GatewayDError::new(
                     ErrCode::GatewayDisconnected,
                     "connection to gateway was lost during request",
@@ -1028,7 +1100,6 @@ impl Client {
         let encoded = match encode_message(msg, "") {
             Ok(e) => e,
             Err(e) => {
-                self.pending_raw.remove(&id);
                 return Err(GatewayDError::new(
                     ErrCode::ClientSendFailed,
                     format!("encode: {e}"),
@@ -1036,22 +1107,26 @@ impl Client {
             }
         };
         if let Err(e) = self.conn.send(encoded.as_bytes()).await {
-            self.pending_raw.remove(&id);
             return Err(e);
         }
 
-        tokio::time::timeout(self.cfg.response_timeout, rx)
+        let result = tokio::time::timeout(self.cfg.response_timeout, rx)
             .await
             .map_err(|_| {
-                self.pending_raw.remove(&id);
-                GatewayDError::new(ErrCode::GatewayTimeout, "response timeout")
+                GatewayDError::new(
+                    ErrCode::GatewayTimeout,
+                    format!("response timeout{}", GatewayDError::REPLY_ROUTING_TIMEOUT_HINT),
+                )
             })?
             .map_err(|_| {
                 GatewayDError::new(
                     ErrCode::GatewayDisconnected,
                     "response channel closed: sender dropped (connection lost or receiver stopped)",
                 )
-            })?
+            })?;
+
+        guard.armed = false;
+        result
     }
 
     // ── Receiver loop ─────────────────────────────────────────────────────────
@@ -1081,15 +1156,103 @@ impl Client {
         };
         let keys: Vec<String> = self.pending.iter().map(|e| e.key().clone()).collect();
         for k in keys {
-            if let Some((_, tx)) = self.pending.remove(&k) {
-                let _ = tx.send(Err(lost()));
+            if let Some((_, entry)) = self.pending.remove(&k) {
+                let _ = entry.tx.send(Err(lost()));
             }
         }
         let raw_keys: Vec<String> = self.pending_raw.iter().map(|e| e.key().clone()).collect();
         for k in raw_keys {
-            if let Some((_, tx)) = self.pending_raw.remove(&k) {
-                let _ = tx.send(Err(lost()));
+            if let Some((_, entry)) = self.pending_raw.remove(&k) {
+                let _ = entry.tx.send(Err(lost()));
             }
+        }
+    }
+
+    fn store_event_unique_id(msg: &Message) -> Option<String> {
+        if msg.envelope.intent != intents::STORE_EVENT {
+            return None;
+        }
+        msg.event
+            .as_ref()
+            .map(|e| e.unique_id.clone())
+            .filter(|s| !s.is_empty())
+    }
+
+    fn dispatch_inbound(self: &Arc<Self>, msg: Message, raw: Vec<u8>) {
+        let arc_msg = Arc::new(msg);
+        let msg_id = arc_msg.envelope.message_id.clone();
+
+        if let Some((_, entry)) = self.pending.remove(&msg_id) {
+            let _ = entry.tx.send(Ok(Arc::clone(&arc_msg)));
+            return;
+        }
+
+        if let Some((_, entry)) = self.pending_raw.remove(&msg_id) {
+            let _ = entry.tx.send(Ok((Arc::clone(&arc_msg), raw)));
+            return;
+        }
+
+        if arc_msg.envelope.intent == intents::STORE_EVENT_RESPONSE {
+            if let Some(reply_uid) = arc_msg
+                .event
+                .as_ref()
+                .map(|e| e.unique_id.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                let matched_key = self.pending.iter().find_map(|entry| {
+                    if entry.value().store_unique_id.as_deref() == Some(reply_uid) {
+                        Some(entry.key().clone())
+                    } else {
+                        None
+                    }
+                });
+                if let Some(key) = matched_key {
+                    if let Some((_, entry)) = self.pending.remove(&key) {
+                        let _ = entry.tx.send(Ok(arc_msg));
+                        return;
+                    }
+                }
+
+                let matched_raw = self.pending_raw.iter().find_map(|entry| {
+                    if entry.value().store_unique_id.as_deref() == Some(reply_uid) {
+                        Some(entry.key().clone())
+                    } else {
+                        None
+                    }
+                });
+                if let Some(key) = matched_raw {
+                    if let Some((_, entry)) = self.pending_raw.remove(&key) {
+                        let _ = entry.tx.send(Ok((arc_msg, raw)));
+                        return;
+                    }
+                }
+            }
+        }
+
+        let is_mem_reply = arc_msg.envelope.intent.message_type
+            == intents::STORE_EVENT_RESPONSE.message_type;
+        if is_mem_reply || msg_id.is_empty() {
+            let unique_id = arc_msg
+                .event
+                .as_ref()
+                .map(|e| e.unique_id.as_str())
+                .unwrap_or("");
+            self.logger.warn(
+                "response did not match any pending request",
+                &[
+                    ("message_id", &msg_id),
+                    ("intent", &arc_msg.envelope.intent.name),
+                    ("unique_id", &unique_id),
+                    ("pending_count", &self.pending.len().to_string()),
+                ],
+            );
+        }
+
+        if self.incoming_tx.send(arc_msg).is_err() {
+            self.logger.warn(
+                "incoming channel lagged or closed; unsolicited message dropped",
+                &[("pending_count", &self.pending.len().to_string())],
+            );
         }
     }
 
@@ -1119,22 +1282,20 @@ impl Client {
                     self.last_inbound_ms.store(now_millis(), Ordering::Release);
                     match decode_message(&raw) {
                         Err(e) => {
+                            if let Ok(header) = header_map_from_raw(&raw) {
+                                let msg_id = header.get("_msg_id").cloned().unwrap_or_default();
+                                if !msg_id.is_empty() && self.pending.contains_key(&msg_id) {
+                                    if let Ok(msg) = decode_message(&raw) {
+                                        self.dispatch_inbound(msg, raw);
+                                        continue;
+                                    }
+                                }
+                            }
                             self.logger
                                 .error("decode error", &[("error", &e.to_string())]);
                         }
                         Ok(msg) => {
-                            let msg_id = msg.envelope.message_id.clone();
-                            let arc_msg = Arc::new(msg);
-
-                            if let Some((_, tx)) = self.pending.remove(&msg_id) {
-                                let _ = tx.send(Ok(arc_msg));
-                            } else if let Some((_, tx)) = self.pending_raw.remove(&msg_id) {
-                                let _ = tx.send(Ok((arc_msg, raw)));
-                            } else {
-                                // Unsolicited push message — forward to subscribers.
-                                // Errors are ignored: no subscribers is fine.
-                                let _ = self.incoming_tx.send(arc_msg);
-                            }
+                            self.dispatch_inbound(msg, raw);
                         }
                     }
                 }
@@ -1331,14 +1492,29 @@ impl Client {
 
 /// Ensure envelope `client_name` and `from` use the connection gateway identity.
 /// Matches Go SDK `normalizeMessageFrom`.
-fn normalize_message_from(client_name: &str, gateway_actor_name: &str, msg: &mut Message) {
+fn normalize_message_from(
+    client_name: &str,
+    gateway_actor_name: &str,
+    msg: &mut Message,
+) -> Result<(), GatewayDError> {
     if msg.envelope.client_name != client_name {
         msg.envelope.client_name = client_name.to_string();
     }
     let expected_from = format!("{client_name}@{gateway_actor_name}");
-    if msg.envelope.from != expected_from {
+    if !msg.envelope.from.is_empty() && msg.envelope.from != expected_from {
+        return Err(GatewayDError::new(
+            ErrCode::ClientSendFailed,
+            format!(
+                "message From {:?} disagrees with connection identity {:?}; set gateway_actor_name \
+                 to the dialed gateway FQN and leave From empty or equal to client.from_address()",
+                msg.envelope.from, expected_from
+            ),
+        ));
+    }
+    if msg.envelope.from.is_empty() {
         msg.envelope.from = expected_from;
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1347,7 +1523,7 @@ mod from_tests {
     use crate::message::{Envelope, Message};
 
     #[test]
-    fn normalize_message_from_uses_connection_gateway() {
+    fn normalize_message_from_rejects_disagreeing_from() {
         let mut msg = Message {
             envelope: Envelope {
                 to: "kb@skills.pod-os.com".to_string(),
@@ -1359,10 +1535,7 @@ mod from_tests {
             ..Default::default()
         };
 
-        normalize_message_from("my-client", "zeroth.pod-os.com", &mut msg);
-
-        assert_eq!(msg.envelope.client_name, "my-client");
-        assert_eq!(msg.envelope.from, "my-client@zeroth.pod-os.com");
+        assert!(normalize_message_from("my-client", "zeroth.pod-os.com", &mut msg).is_err());
     }
 
     #[test]
@@ -1377,7 +1550,7 @@ mod from_tests {
             ..Default::default()
         };
 
-        normalize_message_from("my-client", "skills.pod-os.com", &mut msg);
+        normalize_message_from("my-client", "skills.pod-os.com", &mut msg).unwrap();
 
         assert_eq!(msg.envelope.from, "my-client@skills.pod-os.com");
     }
@@ -1405,8 +1578,8 @@ mod disconnect_tests {
             gateway_actor_name,
             client_name,
             key: "test-key".to_string(),
-            pending: DashMap::new(),
-            pending_raw: DashMap::new(),
+            pending: Arc::new(DashMap::new()),
+            pending_raw: Arc::new(DashMap::new()),
             incoming_tx,
             receiver_active: AtomicBool::new(false),
             receiver_shutdown: StdMutex::new(None),

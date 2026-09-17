@@ -57,7 +57,7 @@ let ts = get_timestamp(); // e.g. "+1741388400.123456"
 
 Tags are structured as `Tag { frequency, key, value }`. In the wire header:
 - Format: `tag_0001=1:key=value` (1-indexed, 4-digit, `freq:key=value`)
-- In batch payloads: `tag_0=1:key=value` (0-indexed)
+- In batch payloads: `tag_1=1:key=value` (1-indexed; `tag_0` is dropped by the actor)
 
 ## Validation
 

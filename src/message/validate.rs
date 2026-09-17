@@ -615,6 +615,19 @@ fn validate_get_events_for_tags(msg: &Message, errs: &mut ValidationErrors) {
             "",
         );
     }
+    if nm.search.is_some() {
+        push_err(
+            errs,
+            "error",
+            intent,
+            "NeuralMemory.Search",
+            "search",
+            "not_serialized",
+            "SearchOptions is not serialized on the wire; put the search clause in payload.data",
+            r#"msg.payload = Some(PayloadFields { data: PayloadData::Text("clause_type:S\tboolean:or\tlow:key=value".into()), ..Default::default() })"#,
+            "message/types.rs:SearchOptions",
+        );
+    }
     // All individual fields within GetEventsForTagsOptions are OPTIONAL.
     // msg.Event is NOT required and NOT dereferenced by the header builder.
 }

@@ -28,7 +28,7 @@ pub fn construct_header(msg: &Message, intent: &Intent, _connection_id_uuid: &st
     if *intent == ACTOR_REQUEST {
         return actor_request_header(msg);
     }
-    if *intent == STORE_EVENT {
+    if *intent == STORE_EVENT || *intent == STORE_EVENT_RESPONSE {
         return store_event_message_header(msg);
     }
     if *intent == STORE_DATA {
@@ -106,6 +106,11 @@ fn actor_request_header(msg: &Message) -> String {
 fn store_event_message_header(msg: &Message) -> String {
     let mut h = Header::new();
     h.add("_db_cmd", "store");
+
+    if let Some(resp) = &msg.response {
+        h.add_if_nonempty("_status", &resp.status);
+        h.add_if_nonempty("_msg", &resp.message);
+    }
 
     if let Some(event) = &msg.event {
         h.add_if_nonempty("unique_id", &event.unique_id);
@@ -186,8 +191,12 @@ fn get_event_message_header(msg: &Message) -> String {
     h.add("_db_cmd", "get");
 
     if let Some(event) = &msg.event {
-        h.add_if_nonempty("event_id", &event.id);
-        h.add_if_nonempty("unique_id", &event.unique_id);
+        // event_id and unique_id are mutually exclusive on get; prefer unique_id.
+        if !event.unique_id.is_empty() {
+            h.add("unique_id", &event.unique_id);
+        } else {
+            h.add_if_nonempty("event_id", &event.id);
+        }
     }
 
     if let Some(opts) = msg.get_event_opts() {
@@ -215,10 +224,10 @@ fn get_event_message_header(msg: &Message) -> String {
         if opts.link_count != 0 {
             h.add("link_count", &opts.link_count.to_string());
         }
-        if let Some(tf) = opts.tag_format {
-            h.add("tag_format", &tf.to_string());
+        h.add("tag_format", &opts.tag_format.map(|tf| tf.to_string()).unwrap_or_else(|| "0".to_string()));
+        if opts.request_format == 2 {
+            h.add("request_format", "2");
         }
-        h.add("request_format", &opts.request_format.to_string());
         h.add_if_nonempty("event_facet_filter", &opts.event_facet_filter);
         h.add_if_nonempty("link_facet_filter", &opts.link_facet_filter);
         h.add_if_nonempty("target_facet_filter", &opts.target_facet_filter);

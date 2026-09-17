@@ -352,11 +352,13 @@ Clauses are evaluated in the order they appear in the search specification.
 
 #### Example 1: Basic GetEventsForTags Request
 
+**Important:** the search clause goes in `payload.data`, not `neural_memory.search` (`SearchOptions` is not serialized on the wire).
+
 ```rust
 use pod_os_client::message::{
     intents,
     types::{
-        Envelope, GetEventsForTagsOptions, Message, NeuralMemoryFields, SearchOptions,
+        Envelope, GetEventsForTagsOptions, Message, NeuralMemoryFields, PayloadData, PayloadFields,
     },
 };
 
@@ -368,13 +370,11 @@ let mut msg = Message {
         client_name: "my-client".to_string(),
         ..Default::default()
     },
+    payload: Some(PayloadFields {
+        data: PayloadData::Text("clause_type:S\tboolean:or\tlow:action=click".to_string()),
+        ..Default::default()
+    }),
     neural_memory: Some(NeuralMemoryFields {
-        search: Some(SearchOptions {
-            clause:         "clause_type:S\tboolean:or\tlow:action=click".to_string(),
-            buffer_results: true,
-            buffer_format:  "0".to_string(),
-            ..Default::default()
-        }),
         get_events_for_tags: Some(GetEventsForTagsOptions {
             buffer_results:    true,
             include_tag_stats: true,
@@ -394,7 +394,7 @@ let resp = client.send_message(&mut msg).await?;
 use pod_os_client::message::{
     intents,
     types::{
-        Envelope, GetEventsForTagsOptions, Message, NeuralMemoryFields, SearchOptions,
+        Envelope, GetEventsForTagsOptions, Message, NeuralMemoryFields, PayloadData, PayloadFields,
     },
 };
 
@@ -409,16 +409,13 @@ let mut msg = Message {
         client_name: "my-client".to_string(),
         ..Default::default()
     },
+    payload: Some(PayloadFields {
+        data: PayloadData::Text(clause.to_string()),
+        ..Default::default()
+    }),
     neural_memory: Some(NeuralMemoryFields {
-        search: Some(SearchOptions {
-            clause:            clause.to_string(),
-            buffer_results:    true,
-            include_tag_stats: true,
-            hit_tag_filter:    "^(action|user)=".to_string(),
-            buffer_format:     "0".to_string(),
-            ..Default::default()
-        }),
         get_events_for_tags: Some(GetEventsForTagsOptions {
+            hit_tag_filter:    "^(action|user)=".to_string(),
             event_pattern:       "2024.*".to_string(),
             include_brief_hits:  false,
             get_all_data:        false,
@@ -460,7 +457,7 @@ Which ID type to use is an either/or decision:
 ```rust
 use pod_os_client::message::{
     intents,
-    types::{Envelope, GetEventsForTagsOptions, Message, NeuralMemoryFields, SearchOptions},
+    types::{Envelope, GetEventsForTagsOptions, Message, NeuralMemoryFields, PayloadData, PayloadFields},
 };
 
 // Option A — by internal EventId
@@ -494,15 +491,14 @@ let mut msg = Message {
         client_name: "my-client".to_string(),
         ..Default::default()
     },
+    payload: Some(PayloadFields {
+        data: PayloadData::Text(clauses),
+        ..Default::default()
+    }),
     neural_memory: Some(NeuralMemoryFields {
-        search: Some(SearchOptions {
-            clause:         clauses,
-            buffer_results: true,
-            buffer_format:  "0".to_string(),
-            ..Default::default()
-        }),
         get_events_for_tags: Some(GetEventsForTagsOptions {
             buffer_results: true,
+            buffer_format:  "0".to_string(),
             ..Default::default()
         }),
         ..Default::default()
@@ -591,3 +587,21 @@ let get_opts = GetEventOptions {
 | `response.hits` | Total matching tags |
 | `response.match_term_count` | Different matching tag values |
 | `response.is_buffered` | Whether response is buffered |
+
+## Integration notes
+
+### Pagination (`end_result`)
+
+`start_result` / `end_result` slice results in **storage order**, not relevance order. For ranking, fetch the full candidate set and re-rank client-side.
+
+### `_hits` is not a relevance score
+
+`_hits` includes stored term frequency. Re-rank on distinct matched keys, then IDF-weighted frequency — do not sort on `_hits` alone.
+
+### Concurrency
+
+Keep roughly **8–10 concurrent** requests per actor connection. Higher fan-out can cause silent timeouts.
+
+### Batch write status
+
+After batch writes, call `batch_links_failed` / `batch_events_failed` — envelope `OK` can hide per-record failures.

@@ -88,6 +88,9 @@ impl GatewayDError {
         }
     }
 
+    /// Appended to response timeouts after a successful GatewayId handshake.
+    pub const REPLY_ROUTING_TIMEOUT_HINT: &'static str = " If GatewayId succeeded, the gateway may not have routed the reply: use a unique ClientName and From = ClientName@<dialed-gateway-FQN>. This is not an authentication failure.";
+
     pub fn wrap(
         code: ErrCode,
         message: impl Into<String>,

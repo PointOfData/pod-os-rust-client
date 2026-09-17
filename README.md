@@ -17,6 +17,15 @@ High-performance async Rust client for the [Pod-OS](https://github.com/PointOfDa
 
 ## Quick Start
 
+### Connect to a hosted gateway
+
+1. Dial the **chosen** gateway's TCP endpoint (`host:62312`).
+2. Set `gateway_actor_name` to **that gateway's FQN** (the connection gateway you dialed — any gateway you are permitted to use; not necessarily the actor's `@domain`). Leave `From` empty or equal to `from_address()` — a mismatched `From` returns an error, not silently rewritten.
+3. Keep roughly **8–10 concurrent** ENM requests per connection; higher fan-out can time out silently.
+3. Use a unique `client_name` per TCP connection. Set `From = client_name@<dialed-gateway-FQN>`. The SDK aligns envelope `from` with `ClientName`.
+4. Omit `passcode` / `user_name` unless that gateway's INI requires them. These are optional AIP fields, not Auth0 credentials.
+5. If `GatewayId` succeeds but a request times out, the gateway likely could not route the reply — check unique `client_name` and `From`. This is not an authentication failure.
+
 ```toml
 # Cargo.toml
 [dependencies]
@@ -34,11 +43,11 @@ use pod_os_client::{
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = Config {
-        host:               "localhost".to_string(),
-        port:               "7654".to_string(),
+        host:               "gateway-nlb.example.com".to_string(),
+        port:               "62312".to_string(),
         client_name:        "my-agent".to_string(),
-        gateway_actor_name: "neural-memory".to_string(),
-        enable_concurrent_mode: true,  // 100K+ msg/s mode
+        gateway_actor_name: "zeroth.customer.example.com".to_string(),
+        enable_concurrent_mode: true,
         ..Default::default()
     };
 
@@ -47,8 +56,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Store an event
     let mut msg = Message {
         envelope: Envelope {
-            to:     "neural-memory@localhost:7654".to_string(),
-            from:   "my-agent@localhost:7654".to_string(),
+            to:     "Foobar@zeroth.customer.example.com".to_string(),
+            from:   format!("{}@{}", cfg.client_name, cfg.gateway_actor_name),
             intent: intents::STORE_EVENT.clone(),
             ..Default::default()
         },
@@ -193,9 +202,8 @@ let cfg = Config {
     port:               "7654".to_string(),
     gateway_actor_name: "neural-memory".to_string(),
 
-    // Identity
+    // Identity (passcode optional — omit unless gateway INI requires it)
     client_name:        "my-service".to_string(),
-    passcode:           "secret".to_string(),
 
     // Retry on connect
     retry_config: RetryConfig {

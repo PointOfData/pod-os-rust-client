@@ -290,6 +290,7 @@ impl Default for GetEventsForTagsOptions {
     }
 }
 
+/// Deprecated: not serialized on the wire. Put the search clause in `payload.data` for GetEventsForTags.
 #[derive(Debug, Clone, Default)]
 pub struct SearchOptions {
     pub pattern: String,

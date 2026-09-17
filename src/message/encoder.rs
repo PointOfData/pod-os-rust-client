@@ -198,7 +198,7 @@ fn build_payload(
 /// Format a batch of events as newline-separated, tab-delimited records.
 ///
 /// Each event line: `field=value\tfield=value\t...`
-/// Tags are appended as: `tab tag_0=freq:key=value tab tag_1=...`
+/// Tags are appended as: `tab tag_1=freq:key=value tab tag_2=...` (1-indexed; tag_0 is dropped by the actor)
 pub fn format_batch_events_payload(events: &[BatchEventSpec]) -> String {
     let mut out = String::new();
     for (i, spec) in events.iter().enumerate() {
@@ -207,12 +207,11 @@ pub fn format_batch_events_payload(events: &[BatchEventSpec]) -> String {
         }
         let e = &spec.event;
         append_event_fields(&mut out, e);
-        // Tags are 0-indexed in batch payloads (unlike header which is 1-indexed)
         for (ti, tag) in spec.tags.iter().enumerate() {
             out.push('\t');
             out.push_str(&format!(
                 "tag_{}={}:{}={}",
-                ti,
+                ti + 1,
                 tag.frequency,
                 tag.key,
                 serialize_tag_value(&tag.value)
@@ -337,6 +336,41 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn format_batch_events_payload_tags_are_one_indexed() {
+        use crate::message::types::{BatchEventSpec, EventFields, Tag, TagValue};
+
+        let spec = BatchEventSpec {
+            event: EventFields {
+                unique_id: "evt-1".to_string(),
+                owner: "$sys".to_string(),
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                location: "TERRA|0|0".to_string(),
+                location_separator: "|".to_string(),
+                ..Default::default()
+            },
+            tags: vec![
+                Tag {
+                    frequency: 1,
+                    key: "kind".to_string(),
+                    value: TagValue::Text("passage".to_string()),
+                    ..Default::default()
+                },
+                Tag {
+                    frequency: 1,
+                    key: "term".to_string(),
+                    value: TagValue::Text("zeta".to_string()),
+                    ..Default::default()
+                },
+            ],
+        };
+
+        let payload = format_batch_events_payload(&[spec]);
+        assert!(payload.contains("tag_1=1:kind=passage"));
+        assert!(payload.contains("tag_2=1:term=zeta"));
+        assert!(!payload.contains("tag_0="));
     }
 
     #[test]

@@ -85,13 +85,7 @@ pub fn decode_message(raw: &[u8]) -> Result<Message, DecodeError> {
     let header_map = parse_header(&header_str);
 
     // ── Resolve intent ────────────────────────────────────────────────────────
-    // Priority: _type > _command > _db_cmd
-    let command = header_map
-        .get("_type")
-        .or_else(|| header_map.get("_command"))
-        .or_else(|| header_map.get("_db_cmd"))
-        .map(|s| s.as_str())
-        .unwrap_or("");
+    let command = neural_memory_command(&header_map, msg_type);
 
     let intent = intents::intent_from_message_type_and_command(msg_type, command)
         .cloned()
@@ -214,6 +208,59 @@ fn parse_dec_field(field: &[u8], name: &str) -> Result<i32, DecodeError> {
                 format!("{name}: invalid int: {s}"),
             )
         })
+}
+
+/// Extract the tab-separated header map from a raw wire frame (after the 63-byte prefix).
+pub fn header_map_from_raw(raw: &[u8]) -> Result<HashMap<String, String>, DecodeError> {
+    if raw.len() < MIN_MSG_SIZE {
+        return Err(DecodeError::new(
+            MsgErrCode::DecodeMessageTooShort,
+            format!("message too short: {} bytes (minimum {})", raw.len(), MIN_MSG_SIZE),
+        ));
+    }
+
+    let to_len = parse_len_field(&raw[9..18], "toLength")?;
+    let from_len = parse_len_field(&raw[18..27], "fromLength")?;
+    let header_len = parse_len_field(&raw[27..36], "headerLength")?;
+    let payload_len = parse_len_field(&raw[54..63], "payloadLength")?;
+    let expected = 63 + to_len + from_len + header_len + payload_len;
+    if expected > raw.len() {
+        return Err(DecodeError::new(
+            MsgErrCode::DecodeInvalidSizeParam,
+            format!(
+                "declared sizes total {} but buffer is {} bytes",
+                expected,
+                raw.len()
+            ),
+        ));
+    }
+
+    let header_start = 63 + to_len + from_len;
+    let header_bytes = &raw[header_start..header_start + header_len];
+    let header_str = String::from_utf8_lossy(header_bytes);
+    Ok(parse_header(&header_str))
+}
+
+/// Command field used for MEM_REQ/MEM_REPLY intent lookup.
+///
+/// ENM puts the db command in `_db_cmd` and the event type in `_type`; prefer the
+/// db command so `(1001, store)` resolves instead of `(1001, iris:task_result)`.
+fn neural_memory_command(header_map: &HashMap<String, String>, msg_type: i32) -> &str {
+    if msg_type == 1000 || msg_type == 1001 {
+        header_map
+            .get("_db_cmd")
+            .or_else(|| header_map.get("_command"))
+            .or_else(|| header_map.get("_type"))
+            .map(|s| s.as_str())
+            .unwrap_or("")
+    } else {
+        header_map
+            .get("_type")
+            .or_else(|| header_map.get("_command"))
+            .or_else(|| header_map.get("_db_cmd"))
+            .map(|s| s.as_str())
+            .unwrap_or("")
+    }
 }
 
 // ── Header parser ────────────────────────────────────────────────────────────
