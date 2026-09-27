@@ -572,6 +572,111 @@ let get_opts = GetEventOptions {
 };
 ```
 
+### Tag Metadata: Storage Timestamps and Owners (tag_format=1 / buffer_format=1)
+
+By default, tags come back as frequency plus `key=value`. Both retrieval intents can also report, for each tag, **when it was stored** and **which event created it** (its owner). Both formats are opt-in.
+
+| Intent | Request option | Wire | Per-tag data added |
+|---|---|---|---|
+| GetEvent | `GetEventOptions { tag_format: Some(1), get_tags: true, .. }` | `tag_format=1` | `TagOutput.tag_number`, `TagOutput.timestamp`, owner when the server emits it |
+| GetEvent | `GetEventOptions.tag_owner_output = TagOwnerOutput::EventKey` / `UniqueId` | `output_tag_owner=Y` / `N` | owner as event key / unique ID |
+| GetEventsForTags | `GetEventsForTagsOptions.buffer_format = "1"` | `buffer_format=1` | `TagOutput.timestamp` (one `_event_tag` line per tag) |
+| GetEventsForTags | `GetEventsForTagsOptions.tag_owner_output = TagOwnerOutput::EventKey` / `UniqueId` | `get_tag_owner=Y` / `get_tag_owner_unique_id=Y` | owner as event key / unique ID |
+
+#### Rules:
+- Request tag metadata only when the task needs it: auditing or provenance ("who asserted this tag?"), recency ("which tags were added after T?"), or reconciling duplicate tags. It makes responses larger (roughly 3x for `buffer_format=1`).
+- `tag_owner_output` needs the matching format: `tag_format: Some(1)` for GetEvent (validation error otherwise) and `buffer_format: "1"` for GetEventsForTags (validation warning otherwise).
+- `TagOwnerOutput::EventKey` fills `TagOutput.owner` with the owning event's key. `TagOwnerOutput::UniqueId` fills `TagOutput.owner_unique_id` with the owning event's unique ID. The response doesn't say which form it carries, so `Client::send_message` remaps using the request. If you decode raw bytes with `decode_message`, call `pod_os_client::message::apply_tag_owner_output(&req, &mut resp)`.
+- A tag with no owning event (for example one created under `$sys`) has an empty owner. Pod-OS sends `NULL` or the all-zero key `+0000000000.000000...` for these, and the SDK normalizes both to empty. An owner that has no unique ID is also empty under `TagOwnerOutput::UniqueId`.
+- `TagOutput.timestamp` is the POSIX UTC time the tag was stored, `"ssssssssss.uuuuuu"`, not the event's timestamp. Use `tag.time()` to get an `Option<std::time::SystemTime>`.
+- GetEvent tags are ordered by `tag_number`, the database tag counter.
+- Current Pod-OS builds leave the owner out of GetEvent `tag_format=1` output even when `output_tag_owner` is sent (verified live). Use GetEventsForTags with `buffer_format: "1"` when you need owners.
+
+#### Example: GetEvent with tag timestamps
+
+```rust
+use pod_os_client::message::{
+    intents,
+    types::{Envelope, EventFields, GetEventOptions, Message, NeuralMemoryFields, TagOwnerOutput},
+};
+
+let mut msg = Message {
+    envelope: Envelope {
+        to:     "mem@zeroth.example.com".to_string(),
+        from:   "my-client@zeroth.example.com".to_string(),
+        intent: intents::GET_EVENT.clone(),
+        ..Default::default()
+    },
+    event: Some(EventFields {
+        unique_id: "order-1234".to_string(),
+        ..Default::default()
+    }),
+    neural_memory: Some(NeuralMemoryFields {
+        get_event: Some(GetEventOptions {
+            get_tags:         true,
+            tag_format:       Some(1),
+            tag_owner_output: TagOwnerOutput::EventKey,
+            ..Default::default()
+        }),
+        ..Default::default()
+    }),
+    ..Default::default()
+};
+let resp = client.send_message(&mut msg).await?;
+// resp.tags()[i]: TagOutput { tag_number: 17, frequency: 1, key: "status", value: "shipped",
+//                             timestamp: "1790266973.722260", owner: "", .. }
+```
+
+#### Example: GetEventsForTags with tag owners by unique ID
+
+```rust
+use pod_os_client::message::{
+    intents,
+    types::{
+        Envelope, GetEventsForTagsOptions, Message, NeuralMemoryFields, PayloadData, PayloadFields,
+        TagOwnerOutput,
+    },
+};
+
+let mut msg = Message {
+    envelope: Envelope {
+        to:     "mem@zeroth.example.com".to_string(),
+        from:   "my-client@zeroth.example.com".to_string(),
+        intent: intents::GET_EVENTS_FOR_TAGS.clone(),
+        ..Default::default()
+    },
+    payload: Some(PayloadFields {
+        data: PayloadData::Text("clause_type:S\tboolean:or\tlow:status=shipped".to_string()),
+        ..Default::default()
+    }),
+    neural_memory: Some(NeuralMemoryFields {
+        get_events_for_tags: Some(GetEventsForTagsOptions {
+            buffer_results:   true,
+            get_all_data:     true,
+            buffer_format:    "1".to_string(),
+            tag_owner_output: TagOwnerOutput::UniqueId,
+            ..Default::default()
+        }),
+        ..Default::default()
+    }),
+    ..Default::default()
+};
+let resp = client.send_message(&mut msg).await?;
+for ev in resp.search_event_records() {
+    for tag in &ev.tags {
+        // tag.timestamp = "1790266974.325930", tag.owner_unique_id = "warehouse-7" ("" when unowned)
+    }
+}
+```
+
+Wire format for `buffer_format=1` (one line per tag after each `_event_id` line):
+
+```
+_event_tag=<event key>	tag_freq=5	tag_value=size=large	tag_timestamp=1790266974.325930	owner=<event key or unique ID>
+```
+
+The SDK also handles a server quirk where the `owner` field is written after the line's newline. Always use the decoder rather than parsing these lines by hand.
+
 ## Response Fields
 
 | Field | Description |

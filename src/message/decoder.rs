@@ -5,7 +5,7 @@
 use crate::message::{
     constants::max_message_size,
     errors::{DecodeError, MsgErrCode},
-    intents,
+    intents, tag_format,
     types::{
         BriefHitRecord, Envelope, EventFields, LinkFields, Message, PayloadData, PayloadFields,
         ResponseFields, StoreBatchEventRecord, StoreLinkBatchEventRecord, TagOutput,
@@ -341,7 +341,8 @@ fn decode_event_field(key: &str, val: &str, event: &mut EventFields) {
 /// O(N) single-pass parser for GetEventsForTags response payloads.
 ///
 /// Record prefixes:
-/// - `_event_id=...`   → event record
+/// - `_event_id=...`   → event record (inline `tag:freq:key=value` fields with buffer_format=0)
+/// - `_event_tag=...`  → one tag of the event named by the field value (buffer_format=1)
 /// - `_link=...`       → link record
 /// - `_linktag=...`    → tags for a link
 /// - `_targettag=...`  → tags for a target event
@@ -352,17 +353,23 @@ fn parse_get_events_for_tags_payload(msg: &mut Message, payload: &str) {
     let mut event_links: HashMap<String, Vec<LinkFields>> = HashMap::new();
     let mut link_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
     let mut target_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
+    let mut event_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
 
+    let payload = tag_format::normalize_tag_owner_lines(payload);
     for line in payload.lines() {
         if line.is_empty() {
             continue;
         }
-        if let Some(_rest) = line.strip_prefix("_event_id=") {
-            // The full line is: _event_id=ID\tfield=val\t...
-            let full_fields = parse_tab_line(line);
-            let mut e = EventFields::default();
-            apply_event_fields(&full_fields, &mut e);
-            events.push(e);
+        if line.starts_with("_event_id=") {
+            events.push(parse_event_id_line(line));
+        } else if line.starts_with("_event_tag=") {
+            let fields = parse_tab_line(line);
+            if let Some(event_key) = fields.get("_event_tag").filter(|k| !k.is_empty()) {
+                event_tags
+                    .entry(event_key.clone())
+                    .or_default()
+                    .push(tag_format::parse_event_tag_payload_fields(&fields));
+            }
         } else if let Some(rest) = line.strip_prefix("_brief_hit=") {
             let parts: Vec<&str> = rest.splitn(2, '\t').collect();
             if !parts.is_empty() {
@@ -395,6 +402,7 @@ fn parse_get_events_for_tags_payload(msg: &mut Message, payload: &str) {
 
     // Assembly: attach tags and links to events
     for event in &mut events {
+        attach_event_tags(event, &event_tags);
         if let Some(links) = event_links.remove(&event.id) {
             for mut link in links {
                 if let Some(lt) = link_tags.remove(&link.id) {
@@ -417,6 +425,43 @@ fn parse_get_events_for_tags_payload(msg: &mut Message, payload: &str) {
     resp.brief_hits = brief_hits;
 }
 
+/// Parse an `_event_id=` payload line. Inline `tag:` fields are read in wire order rather
+/// than from a map because tags sharing a key and frequency (e.g. two `tag:5:size` fields)
+/// would collide.
+fn parse_event_id_line(line: &str) -> EventFields {
+    let fields = parse_tab_line(line);
+    let mut e = EventFields::default();
+    apply_event_fields(&fields, &mut e);
+    for part in line.split('\t') {
+        if let Some((k, v)) = part.split_once('=') {
+            if k.starts_with("tag:") {
+                if let Some(t) = parse_inline_tag(k, v) {
+                    e.tags.push(t);
+                }
+            }
+        }
+    }
+    if fields.contains_key("_event_tag") {
+        e.tags.push(tag_format::parse_event_tag_payload_fields(&fields));
+    }
+    if let Some(uid) = tag_format::unique_id_from_tags(&e.tags) {
+        e.unique_id = uid.to_string();
+    }
+    e
+}
+
+/// Append buffer_format=1 `_event_tag` tags recorded for this event's key.
+fn attach_event_tags(event: &mut EventFields, event_tags: &HashMap<String, Vec<TagOutput>>) {
+    if let Some(tags) = event_tags.get(&event.id) {
+        event.tags.extend(tags.iter().cloned());
+        if event.unique_id.is_empty() {
+            if let Some(uid) = tag_format::unique_id_from_tags(&event.tags) {
+                event.unique_id = uid.to_string();
+            }
+        }
+    }
+}
+
 fn apply_event_fields(fields: &HashMap<String, String>, e: &mut EventFields) {
     for (k, v) in fields {
         match k.as_str() {
@@ -433,31 +478,26 @@ fn apply_event_fields(fields: &HashMap<String, String>, e: &mut EventFields) {
             _ => {}
         }
     }
-    for (k, v) in fields {
-        if k.starts_with("tag:") {
-            if let Some(t) = parse_inline_tag(k, v) {
-                if t.key == "_unique_id" || t.key == "unique_id" {
-                    e.unique_id = t.value.clone();
-                }
-                e.tags.push(t);
-            }
-        }
-    }
 }
 
 /// Parse GetEventsForTags records inlined in the header tab stream (BufferResults=N).
 ///
 /// ENM appends `_event_id`, tags, and link records as tab-separated fields after the
-/// response metadata fields when the payload body is empty.
+/// response metadata fields when the payload body is empty. With buffer_format=1 each tag
+/// is an `_event_tag=<event key>` field followed by its `tag_freq`, `tag_value`,
+/// `tag_timestamp`, and optional `owner` fields.
 fn parse_get_events_for_tags_inline_header(msg: &mut Message, header: &str) {
     let mut events: Vec<EventFields> = Vec::new();
     let mut brief_hits: Vec<BriefHitRecord> = Vec::new();
     let mut event_links: HashMap<String, Vec<LinkFields>> = HashMap::new();
     let mut link_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
     let mut target_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
+    let mut event_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
     let mut current_event: Option<EventFields> = None;
+    let mut pending_tag: Option<(String, HashMap<String, String>)> = None;
 
-    for part in header.split('\t') {
+    let header = tag_format::normalize_tag_owner_lines(header);
+    for part in header.split(['\t', '\n']) {
         if part.is_empty() {
             continue;
         }
@@ -467,7 +507,25 @@ fn parse_get_events_for_tags_inline_header(msg: &mut Message, header: &str) {
         let key = &part[..eq];
         let val = &part[eq + 1..];
 
+        if let Some((_, fields)) = pending_tag.as_mut() {
+            if matches!(key, "tag_freq" | "tag_value" | "tag_timestamp" | "owner") {
+                fields.insert(key.to_string(), val.to_string());
+                continue;
+            }
+        }
+        if let Some((event_key, fields)) = pending_tag.take() {
+            event_tags
+                .entry(event_key)
+                .or_default()
+                .push(tag_format::parse_event_tag_payload_fields(&fields));
+        }
+
         match key {
+            "_event_tag" => {
+                if !val.is_empty() {
+                    pending_tag = Some((val.to_string(), HashMap::new()));
+                }
+            }
             "_event_id" => {
                 if let Some(e) = current_event.take() {
                     events.push(e);
@@ -503,14 +561,30 @@ fn parse_get_events_for_tags_inline_header(msg: &mut Message, header: &str) {
                 }
             }
             k if current_event.is_some() => {
-                let mut fields = HashMap::new();
-                fields.insert(k.to_string(), val.to_string());
-                apply_event_fields(&fields, current_event.as_mut().unwrap());
+                let e = current_event.as_mut().unwrap();
+                if k.starts_with("tag:") {
+                    if let Some(t) = parse_inline_tag(k, val) {
+                        if t.key == "_unique_id" || t.key == "unique_id" {
+                            e.unique_id = t.value.clone();
+                        }
+                        e.tags.push(t);
+                    }
+                } else {
+                    let mut fields = HashMap::new();
+                    fields.insert(k.to_string(), val.to_string());
+                    apply_event_fields(&fields, e);
+                }
             }
             _ => {}
         }
     }
 
+    if let Some((event_key, fields)) = pending_tag {
+        event_tags
+            .entry(event_key)
+            .or_default()
+            .push(tag_format::parse_event_tag_payload_fields(&fields));
+    }
     if let Some(e) = current_event {
         events.push(e);
     }
@@ -520,6 +594,7 @@ fn parse_get_events_for_tags_inline_header(msg: &mut Message, header: &str) {
     }
 
     for event in &mut events {
+        attach_event_tags(event, &event_tags);
         if let Some(links) = event_links.remove(&event.id) {
             for mut link in links {
                 if let Some(lt) = link_tags.remove(&link.id) {
@@ -596,15 +671,13 @@ fn parse_tag_output_line(s: &str) -> Option<TagOutput> {
 // ── GetEvent response parser ─────────────────────────────────────────────────
 
 fn parse_get_event_response(msg: &mut Message, hm: &HashMap<String, String>, payload: &str) {
-    // Header-embedded tags: event_tag:<num>:<freq>=key=value
-    let mut tags: Vec<TagOutput> = Vec::new();
-    for (k, v) in hm {
-        if k.starts_with("event_tag:") {
-            if let Some(t) = parse_event_tag_field(k, v) {
-                tags.push(t);
-            }
-        }
-    }
+    // Header-embedded tags, ordered by tag number:
+    // event_tag:nnnnnnnnn:fffffffff[:ssssssssss.uuuuuu[:owner_id]]=key=value
+    let mut tags: Vec<TagOutput> = hm
+        .iter()
+        .filter_map(|(k, v)| tag_format::parse_event_tag_header(k, v))
+        .collect();
+    tag_format::sort_tags_by_number(&mut tags);
 
     // Payload-embedded links (when get_links=Y). send_data blob stays on msg.payload.
     let mut links: Vec<LinkFields> = Vec::new();
@@ -644,31 +717,20 @@ fn parse_get_event_response(msg: &mut Message, hm: &HashMap<String, String>, pay
         }
     }
     event.links = links;
+
+    let record = event.clone();
+    msg.response
+        .get_or_insert_with(ResponseFields::default)
+        .event_records = vec![record];
 }
 
-/// Parse `event_tag:<num>:<freq>=key=value` → `TagOutput`.
+/// Parse a GetEvent tag header field into a `TagOutput`.
+///
+/// `key` is `event_tag:nnnnnnnnn:fffffffff` (tag_format=0) or
+/// `event_tag:nnnnnnnnn:fffffffff:ssssssssss.uuuuuu[:owner_id]` (tag_format=1); `val` is
+/// `key=value`.
 pub fn parse_event_tag_field(key: &str, val: &str) -> Option<TagOutput> {
-    // key format: event_tag:<num>:<freq>
-    let parts: Vec<&str> = key.splitn(3, ':').collect();
-    if parts.len() < 3 {
-        return None;
-    }
-    let freq: i32 = parts[2].parse().unwrap_or(0);
-    // val format: key=value
-    if let Some(eq) = val.find('=') {
-        Some(TagOutput {
-            frequency: freq,
-            key: val[..eq].to_string(),
-            value: val[eq + 1..].to_string(),
-            ..Default::default()
-        })
-    } else {
-        Some(TagOutput {
-            frequency: freq,
-            key: val.to_string(),
-            ..Default::default()
-        })
-    }
+    tag_format::parse_event_tag_header(key, val)
 }
 
 // ── StoreBatchEvents response parser ─────────────────────────────────────────
@@ -908,6 +970,32 @@ mod tests {
             .tags
             .iter()
             .any(|t| t.key == "created_by" && t.value == "default"));
+    }
+
+    #[test]
+    fn get_events_for_tags_inline_header_buffer_format_1() {
+        let header = "_command=events_for_tag\t_status=ok\t_total_event_hits=1\t_msg_id=m\t\
+                      _event_id=E1\t_hits=1\t\
+                      _event_tag=E1\ttag_freq=2\ttag_value=color=red\ttag_timestamp=1.000001\n\
+                      \towner=O1_event_tag=E1\ttag_freq=1\ttag_value=_unique_id=uid-1\t\
+                      tag_timestamp=1.000002\n\towner=NULL\n";
+        let mut msg = Message {
+            response: Some(ResponseFields::default()),
+            ..Default::default()
+        };
+        parse_get_events_for_tags_inline_header(&mut msg, header);
+
+        let resp = msg.response.unwrap();
+        assert_eq!(resp.event_records.len(), 1);
+        let event = &resp.event_records[0];
+        assert_eq!(event.unique_id, "uid-1");
+        assert_eq!(event.tags.len(), 2);
+        assert_eq!(
+            (event.tags[0].key.as_str(), event.tags[0].frequency, event.tags[0].timestamp.as_str(), event.tags[0].owner.as_str()),
+            ("color", 2, "1.000001", "O1")
+        );
+        assert_eq!(event.tags[1].owner, "");
+        assert!(event.owner.is_empty(), "tag owner must not leak into event owner");
     }
 
     #[test]

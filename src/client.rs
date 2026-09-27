@@ -33,8 +33,8 @@ use crate::{
     errors::{ErrCode, GatewayDError},
     log::{Level, Logger, NoOpLogger, TracingLogger},
     message::{
-        decode_message, encode_message, header_map_from_raw, intents,
-        types::{Envelope, Message, SocketMessage},
+        apply_tag_owner_output, decode_message, encode_message, header_map_from_raw, intents,
+        types::{Envelope, Message, SocketMessage, TagOwnerOutput},
     },
 };
 
@@ -481,11 +481,12 @@ impl Client {
     /// Send a message and await its response.
     pub async fn send_message(&self, msg: &mut Message) -> Result<Arc<Message>, GatewayDError> {
         self.autocorrect_envelope(msg)?;
-        if self.receiver_active.load(Ordering::Acquire) {
+        let resp = if self.receiver_active.load(Ordering::Acquire) {
             self.send_concurrent(msg).await
         } else {
             self.send_sync(msg).await.map(Arc::new)
-        }
+        };
+        resp.map(|r| with_tag_owner_output(msg, r))
     }
 
     /// Same as `send_message` but also returns the raw wire bytes.
@@ -494,12 +495,13 @@ impl Client {
         msg: &mut Message,
     ) -> Result<(Arc<Message>, Vec<u8>), GatewayDError> {
         self.autocorrect_envelope(msg)?;
-        if self.receiver_active.load(Ordering::Acquire) {
-            self.send_concurrent_raw(msg).await
+        let (resp, raw) = if self.receiver_active.load(Ordering::Acquire) {
+            self.send_concurrent_raw(msg).await?
         } else {
             let (m, raw) = self.send_sync_with_raw(msg).await?;
-            Ok((Arc::new(m), raw))
-        }
+            (Arc::new(m), raw)
+        };
+        Ok((with_tag_owner_output(msg, resp), raw))
     }
 
     /// Send a message without waiting for a response.
@@ -1515,6 +1517,15 @@ fn normalize_message_from(
         msg.envelope.from = expected_from;
     }
     Ok(())
+}
+
+/// Apply `apply_tag_owner_output` to a response. The response is only cloned when the
+/// request asked for owners by unique ID and the `Arc` is shared.
+fn with_tag_owner_output(req: &Message, mut resp: Arc<Message>) -> Arc<Message> {
+    if req.tag_owner_output() == TagOwnerOutput::UniqueId {
+        apply_tag_owner_output(req, Arc::make_mut(&mut resp));
+    }
+    resp
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@
 
 use crate::message::{
     intents::{self, Intent},
-    types::Message,
+    types::{Message, TagOwnerOutput},
 };
 
 /// Build the full header string for a message.
@@ -225,6 +225,11 @@ fn get_event_message_header(msg: &Message) -> String {
             h.add("link_count", &opts.link_count.to_string());
         }
         h.add("tag_format", &opts.tag_format.map(|tf| tf.to_string()).unwrap_or_else(|| "0".to_string()));
+        match opts.tag_owner_output {
+            TagOwnerOutput::EventKey => h.add("output_tag_owner", "Y"),
+            TagOwnerOutput::UniqueId => h.add("output_tag_owner", "N"),
+            TagOwnerOutput::None => {}
+        }
         if opts.request_format == 2 {
             h.add("request_format", "2");
         }
@@ -312,6 +317,11 @@ fn get_events_for_tags_message_header(msg: &Message) -> String {
         h.add_if_nonempty("link_category", &opts.link_category);
         h.add_if_nonempty("owner", &opts.owner);
         h.add_if_nonempty("owner_unique_id", &opts.owner_unique_id);
+        match opts.tag_owner_output {
+            TagOwnerOutput::EventKey => h.add("get_tag_owner", "Y"),
+            TagOwnerOutput::UniqueId => h.add("get_tag_owner_unique_id", "Y"),
+            TagOwnerOutput::None => {}
+        }
         h.add_if_nonempty("hit_tag_filter", &opts.hit_tag_filter);
         h.add(
             "buffer_format",

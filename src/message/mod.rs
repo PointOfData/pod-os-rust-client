@@ -6,6 +6,7 @@ pub mod errors;
 pub mod header;
 pub mod intents;
 pub mod search;
+pub mod tag_format;
 pub mod types;
 pub mod utils;
 pub mod validate;
@@ -31,11 +32,13 @@ pub use intents::{
     STORE_BATCH_TAGS_RESPONSE, STORE_DATA, STORE_DATA_RESPONSE, STORE_EVENT, STORE_EVENT_RESPONSE,
     UNLINK_EVENT, UNLINK_EVENT_RESPONSE,
 };
+pub use tag_format::apply_tag_owner_output;
 pub use types::{
     BatchEventSpec, BatchLinkEventSpec, BriefHitRecord, DataType, DateTimeObject, Envelope,
     EventFields, GetEventOptions, GetEventsForTagsOptions, LinkFields, Message, NeuralMemoryFields,
     NullInt, PayloadData, PayloadFields, ResponseFields, SearchOptions, SocketMessage,
-    StoreBatchEventRecord, StoreLinkBatchEventRecord, Tag, TagList, TagOutput, TagValue,
+    StoreBatchEventRecord, StoreLinkBatchEventRecord, Tag, TagList, TagOutput, TagOwnerOutput,
+    TagValue,
 };
 pub use utils::{get_timestamp, get_timestamp_from_time};
 pub use validate::{

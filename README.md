@@ -161,6 +161,37 @@ let tag = Tag {
 
 In the wire header: `tag_0001=1:classification=urgent` (1-indexed, 4-digit, `freq:key=value`).
 
+## Tag Metadata (timestamps and owners)
+
+GetEvent and GetEventsForTags can return each tag's storage time and owning event. Both are opt-in:
+
+```rust
+use pod_os_client::message::types::{GetEventOptions, GetEventsForTagsOptions, TagOwnerOutput};
+
+// GetEvent: tag_format=1 adds tag_number and timestamp to every tag
+let get_opts = GetEventOptions {
+    get_tags:   true,
+    tag_format: Some(1),
+    ..Default::default()
+};
+
+// GetEventsForTags: buffer_format=1 adds timestamp; tag_owner_output adds the owner
+let search_opts = GetEventsForTagsOptions {
+    buffer_results:   true,
+    buffer_format:    "1".to_string(),
+    tag_owner_output: TagOwnerOutput::UniqueId, // or TagOwnerOutput::EventKey
+    ..Default::default()
+};
+
+let resp = client.send_message(&mut msg).await?;
+for tag in &resp.search_event_records()[0].tags {
+    let when = tag.time(); // Option<SystemTime>, UTC storage time
+    println!("{}={} {:?} {}", tag.key, tag.value, when, tag.owner_unique_id); // tag.owner with EventKey
+}
+```
+
+`Client::send_message` routes the owner into `owner` (event key) or `owner_unique_id` according to the request. When decoding raw bytes yourself, call `pod_os_client::message::apply_tag_owner_output(&req, &mut resp)`. See "Tag Metadata" in `src/knowledge/docs/neural_memory_retrieval.md` for the rules.
+
 ## Validation
 
 Enable at startup by setting the environment variable `PODOS_VALIDATE=1`.
@@ -344,6 +375,9 @@ Designed to sustain **100 K+ messages per second** in concurrent mode:
 | `message.IntentType.StoreData` | `message::intents::STORE_DATA` |
 | `message.GetTimestamp()` | `message::get_timestamp()` |
 | `message.Validate()` | `msg.validate()` |
+| `message.ApplyTagOwnerOutput()` | `message::apply_tag_owner_output()` |
+| `message.TagOwnerEventKey` / `TagOwnerUniqueID` | `message::TagOwnerOutput::EventKey` / `UniqueId` |
+| `TagOutput.Time()` | `TagOutput::time()` |
 | `errors.GatewayDError` | `errors::GatewayDError` |
 | `connection.ChannelPool` | `connection::pool::ChannelPool` |
 | `connection.Retry` | `connection::retry::Retry` |

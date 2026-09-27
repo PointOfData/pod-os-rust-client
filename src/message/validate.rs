@@ -12,7 +12,10 @@ use once_cell::sync::Lazy;
 use serde::Serialize;
 use std::collections::HashMap;
 
-use crate::message::{intents, types::Message};
+use crate::message::{
+    intents,
+    types::{Message, TagOwnerOutput},
+};
 
 // ── Global gate ──────────────────────────────────────────────────────────────
 
@@ -580,6 +583,123 @@ fn validate_get_event(msg: &Message, errs: &mut ValidationErrors) {
         );
     }
     validate_lookup_owner_not_used_event(errs, intent, event);
+    if let Some(opts) = msg.get_event_opts() {
+        validate_get_event_tag_format(errs, intent, opts);
+    }
+}
+
+fn validate_get_event_tag_format(
+    errs: &mut ValidationErrors,
+    intent: &str,
+    opts: &crate::message::types::GetEventOptions,
+) {
+    const TF_FIELD: &str = "NeuralMemory.GetEvent.TagFormat";
+    const OWNER_FIELD: &str = "NeuralMemory.GetEvent.TagOwnerOutput";
+
+    if let Some(tf) = opts.tag_format.filter(|tf| *tf != 0 && *tf != 1) {
+        push_err(
+            errs,
+            "error",
+            intent,
+            TF_FIELD,
+            "tag_format",
+            "format",
+            &format!("tag_format must be 0 or 1; got {tf}."),
+            "Set tag_format to Some(1) for per-tag timestamps and owners, or leave it None for the default format 0.",
+            "msg.neural_memory.as_mut().unwrap().get_event.as_mut().unwrap().tag_format = Some(1);",
+        );
+    }
+
+    let tag_format_1 = opts.tag_format == Some(1);
+    if opts.tag_owner_output != TagOwnerOutput::None && !tag_format_1 {
+        push_err(
+            errs,
+            "error",
+            intent,
+            OWNER_FIELD,
+            "output_tag_owner",
+            "semantic",
+            "tag_owner_output only applies to tag_format=1; with tag_format=0 no owners are returned.",
+            "Set tag_format to Some(1) alongside tag_owner_output.",
+            "GetEventOptions { get_tags: true, tag_format: Some(1), tag_owner_output: TagOwnerOutput::EventKey, ..Default::default() }",
+        );
+    }
+    if tag_format_1 && !opts.get_tags {
+        push_err(
+            errs,
+            "warn",
+            intent,
+            TF_FIELD,
+            "tag_format",
+            "semantic",
+            "tag_format=1 only changes how tags are returned, but get_tags is false so no tags are requested.",
+            "Set get_tags to true.",
+            "GetEventOptions { get_tags: true, tag_format: Some(1), ..Default::default() }",
+        );
+    }
+}
+
+fn validate_get_events_for_tags_tag_format(
+    errs: &mut ValidationErrors,
+    intent: &str,
+    opts: &crate::message::types::GetEventsForTagsOptions,
+) {
+    const BF_FIELD: &str = "NeuralMemory.GetEventsForTags.BufferFormat";
+    const OWNER_FIELD: &str = "NeuralMemory.GetEventsForTags.TagOwnerOutput";
+
+    if !matches!(opts.buffer_format.as_str(), "" | "0" | "1") {
+        push_err(
+            errs,
+            "error",
+            intent,
+            BF_FIELD,
+            "buffer_format",
+            "format",
+            &format!(
+                "buffer_format must be \"0\" or \"1\"; got {:?}.",
+                opts.buffer_format
+            ),
+            "Set buffer_format to \"1\" for one line per tag with timestamps and owners, or \"0\" (default) for inline tags.",
+            "GetEventsForTagsOptions { buffer_format: \"1\".into(), ..Default::default() }",
+        );
+    }
+    if opts.tag_owner_output != TagOwnerOutput::None && opts.buffer_format != "1" {
+        push_err(
+            errs,
+            "warn",
+            intent,
+            OWNER_FIELD,
+            "get_tag_owner / get_tag_owner_unique_id",
+            "semantic",
+            "tag_owner_output only applies to buffer_format=1; with buffer_format=0 no owners are returned.",
+            "Set buffer_format to \"1\" alongside tag_owner_output.",
+            "GetEventsForTagsOptions { buffer_format: \"1\".into(), tag_owner_output: TagOwnerOutput::EventKey, ..Default::default() }",
+        );
+    }
+}
+
+/// Report a header flag whose value is present but not Y or N.
+fn validate_wire_yn(
+    errs: &mut ValidationErrors,
+    hm: &HashMap<String, String>,
+    intent: &str,
+    key: &str,
+    field: &str,
+    code: &str,
+) {
+    if let Some(v) = hm.get(key).filter(|v| *v != "Y" && *v != "N") {
+        push_err(
+            errs,
+            "error",
+            intent,
+            field,
+            key,
+            "header_value",
+            &format!("{key} must be Y or N; got {v:?}. A bare flag without =Y is ignored by Pod-OS."),
+            &format!("Send {key}=Y (set {field})."),
+            code,
+        );
+    }
 }
 
 fn validate_get_events_for_tags(msg: &Message, errs: &mut ValidationErrors) {
@@ -627,6 +747,9 @@ fn validate_get_events_for_tags(msg: &Message, errs: &mut ValidationErrors) {
             r#"msg.payload = Some(PayloadFields { data: PayloadData::Text("clause_type:S\tboolean:or\tlow:key=value".into()), ..Default::default() })"#,
             "message/types.rs:SearchOptions",
         );
+    }
+    if let Some(opts) = &nm.get_events_for_tags {
+        validate_get_events_for_tags_tag_format(errs, intent, opts);
     }
     // All individual fields within GetEventsForTagsOptions are OPTIONAL.
     // msg.Event is NOT required and NOT dereferenced by the header builder.
@@ -1420,8 +1543,83 @@ fn validate_wire_header_fields(msg: &Message, raw: &[u8], errs: &mut ValidationE
                         "",
                     );
                 }
+                if let Some(tf) = hm.get("tag_format").filter(|v| *v != "0" && *v != "1") {
+                    push_err(
+                        errs,
+                        "error",
+                        "GetEvent",
+                        "NeuralMemory.GetEvent.TagFormat",
+                        "tag_format",
+                        "header_value",
+                        &format!("tag_format must be 0 or 1; got {tf:?}."),
+                        "Set neural_memory.get_event.tag_format to Some(0) or Some(1).",
+                        "GetEventOptions { get_tags: true, tag_format: Some(1), ..Default::default() }",
+                    );
+                }
+                validate_wire_yn(
+                    errs,
+                    &hm,
+                    "GetEvent",
+                    "output_tag_owner",
+                    "NeuralMemory.GetEvent.TagOwnerOutput",
+                    "GetEventOptions { tag_format: Some(1), tag_owner_output: TagOwnerOutput::EventKey, ..Default::default() }",
+                );
+                if hm.get("output_tag_owner").is_some_and(|v| !v.is_empty())
+                    && hm.get("tag_format").map(String::as_str) != Some("1")
+                {
+                    push_err(
+                        errs,
+                        "warn",
+                        "GetEvent",
+                        "NeuralMemory.GetEvent.TagOwnerOutput",
+                        "output_tag_owner",
+                        "semantic",
+                        "output_tag_owner only applies to tag_format=1.",
+                        "Set neural_memory.get_event.tag_format to Some(1).",
+                        "GetEventOptions { get_tags: true, tag_format: Some(1), tag_owner_output: TagOwnerOutput::EventKey, ..Default::default() }",
+                    );
+                }
             }
             "events_for_tag" => {
+                if let Some(bf) = hm.get("buffer_format").filter(|v| *v != "0" && *v != "1") {
+                    push_err(
+                        errs,
+                        "error",
+                        "GetEventsForTags",
+                        "NeuralMemory.GetEventsForTags.BufferFormat",
+                        "buffer_format",
+                        "header_value",
+                        &format!("buffer_format must be 0 or 1; got {bf:?}."),
+                        "Set neural_memory.get_events_for_tags.buffer_format to \"0\" or \"1\".",
+                        "GetEventsForTagsOptions { buffer_format: \"1\".into(), ..Default::default() }",
+                    );
+                }
+                for key in ["get_tag_owner", "get_tag_owner_unique_id"] {
+                    validate_wire_yn(
+                        errs,
+                        &hm,
+                        "GetEventsForTags",
+                        key,
+                        "NeuralMemory.GetEventsForTags.TagOwnerOutput",
+                        "GetEventsForTagsOptions { buffer_format: \"1\".into(), tag_owner_output: TagOwnerOutput::EventKey, ..Default::default() }",
+                    );
+                }
+                let has_owner_flag = ["get_tag_owner", "get_tag_owner_unique_id"]
+                    .iter()
+                    .any(|k| hm.get(*k).is_some_and(|v| !v.is_empty()));
+                if has_owner_flag && hm.get("buffer_format").map(String::as_str) != Some("1") {
+                    push_err(
+                        errs,
+                        "warn",
+                        "GetEventsForTags",
+                        "NeuralMemory.GetEventsForTags.TagOwnerOutput",
+                        "get_tag_owner / get_tag_owner_unique_id",
+                        "semantic",
+                        "get_tag_owner / get_tag_owner_unique_id only apply to buffer_format=1.",
+                        "Set neural_memory.get_events_for_tags.buffer_format to \"1\".",
+                        "GetEventsForTagsOptions { buffer_format: \"1\".into(), tag_owner_output: TagOwnerOutput::EventKey, ..Default::default() }",
+                    );
+                }
                 if !hm.contains_key("buffer_results") {
                     push_err(
                         errs,

@@ -127,15 +127,54 @@ pub struct Tag {
 pub type TagList = Vec<Tag>;
 
 /// Tag as returned in decoded responses.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TagOutput {
     pub frequency: i32,
     pub category: String,
     pub key: String,
     pub value: String,
+    /// Event key of the event that created the tag (`TagOwnerOutput::EventKey`); empty when unowned.
     pub owner: String,
+    /// Unique ID of the event that created the tag (`TagOwnerOutput::UniqueId`); empty when unowned
+    /// or the owner has no unique ID.
+    pub owner_unique_id: String,
+    /// Tag storage time as POSIX `"ssssssssss.uuuuuu"` UTC (GetEvent `tag_format=1`,
+    /// GetEventsForTags `buffer_format=1`).
     pub timestamp: String,
+    /// Database tag counter (GetEvent `event_tag:nnnnnnnnn`); 0 when not reported.
+    pub tag_number: i64,
     pub target_tag_id: String,
+}
+
+impl TagOutput {
+    /// Parse `timestamp` into a `SystemTime` (UTC). Returns `None` when empty or malformed.
+    pub fn time(&self) -> Option<std::time::SystemTime> {
+        crate::message::tag_format::parse_posix_timestamp(&self.timestamp)
+    }
+}
+
+/// Selects whether, and how, the owner of each returned tag is reported in GetEvent
+/// (`tag_format=1`) and GetEventsForTags (`buffer_format=1`) responses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TagOwnerOutput {
+    /// Do not report tag owners (default).
+    #[default]
+    None,
+    /// Report the full event key of the event that created each tag (`TagOutput::owner`).
+    EventKey,
+    /// Report the unique ID of the event that created each tag (`TagOutput::owner_unique_id`).
+    UniqueId,
+}
+
+impl TagOwnerOutput {
+    /// Wire-independent name: `""`, `"event_key"`, or `"unique_id"`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TagOwnerOutput::None => "",
+            TagOwnerOutput::EventKey => "event_key",
+            TagOwnerOutput::UniqueId => "unique_id",
+        }
+    }
 }
 
 // ─────────────────────────────────────────────
@@ -215,6 +254,8 @@ pub struct GetEventOptions {
     pub get_links: bool,
     pub get_link_tags: bool,
     pub get_target_tags: bool,
+    /// Tag output format: 0 (default) = `event_tag:n:f`, 1 = `event_tag:n:f:ssssssssss.uuuuuu[:owner]`
+    /// (adds storage timestamp and owner).
     pub tag_format: NullInt,
     pub request_format: i32,
     pub first_link: i32,
@@ -224,6 +265,9 @@ pub struct GetEventOptions {
     pub target_facet_filter: String,
     pub category_filter: String,
     pub tag_filter: String,
+    /// Report each tag's owner (requires `tag_format = Some(1)`): `EventKey` sends
+    /// `output_tag_owner=Y`, `UniqueId` sends `output_tag_owner=N`.
+    pub tag_owner_output: TagOwnerOutput,
 }
 
 #[derive(Debug, Clone)]
@@ -253,7 +297,13 @@ pub struct GetEventsForTagsOptions {
     pub include_tag_stats: bool,
     pub invert_hit_tag_filter: bool,
     pub hit_tag_filter: String,
+    /// Output format: `"0"` = tags inline on the `_event_id` line (`tag:freq:key=value`),
+    /// `"1"` = one `_event_tag` line per tag with `tag_freq`, `tag_value`, `tag_timestamp`
+    /// and optional `owner`.
     pub buffer_format: String,
+    /// Report each tag's owner (requires `buffer_format = "1"`): `EventKey` sends
+    /// `get_tag_owner=Y`, `UniqueId` sends `get_tag_owner_unique_id=Y`.
+    pub tag_owner_output: TagOwnerOutput,
 }
 
 impl Default for GetEventsForTagsOptions {
@@ -286,6 +336,7 @@ impl Default for GetEventsForTagsOptions {
             invert_hit_tag_filter: false,
             hit_tag_filter: String::new(),
             buffer_format: "0".to_string(),
+            tag_owner_output: TagOwnerOutput::None,
         }
     }
 }
@@ -477,6 +528,20 @@ impl Message {
         self.neural_memory
             .as_ref()
             .and_then(|n| n.get_events_for_tags.as_ref())
+    }
+
+    /// `TagOwnerOutput` requested by a GetEvent or GetEventsForTags message.
+    pub fn tag_owner_output(&self) -> TagOwnerOutput {
+        use crate::message::intents::{GET_EVENT, GET_EVENTS_FOR_TAGS};
+        if self.envelope.intent == GET_EVENT {
+            self.get_event_opts()
+                .map_or(TagOwnerOutput::None, |o| o.tag_owner_output)
+        } else if self.envelope.intent == GET_EVENTS_FOR_TAGS {
+            self.get_events_for_tags_opts()
+                .map_or(TagOwnerOutput::None, |o| o.tag_owner_output)
+        } else {
+            TagOwnerOutput::None
+        }
     }
 
     /// Event records returned by a GetEventsForTags (search) response.
