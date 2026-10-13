@@ -299,6 +299,33 @@ fn apply_tag_owner_output_get_event_unique_id() {
 
 // ── Header encoding ──────────────────────────────────────────────────────────
 
+#[test]
+fn store_event_encodes_neural_memory_tags() {
+    let msg = Message {
+        envelope: Envelope {
+            to: "test@zeroth.pod-os.com".into(),
+            from: "cli@zeroth.pod-os.com".into(),
+            intent: intents::STORE_EVENT.clone(),
+            ..Default::default()
+        },
+        event: Some(EventFields {
+            unique_id: "u1".into(),
+            ..Default::default()
+        }),
+        neural_memory: Some(NeuralMemoryFields {
+            tags: vec![pod_os_client::message::Tag {
+                frequency: 2,
+                key: "color".into(),
+                value: pod_os_client::message::TagValue::Text("blue".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert!(header_of(&msg).contains("tag_0001=2:color=blue"));
+}
+
 fn header_of(msg: &Message) -> String {
     let sm = encode_message(msg, "").expect("encode");
     let raw = sm.as_bytes();

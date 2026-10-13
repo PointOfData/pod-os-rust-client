@@ -129,11 +129,22 @@ fn store_event_message_header(msg: &Message) -> String {
         if let Some(payload) = &msg.payload {
             h.add_if_nonempty("mime", &payload.mime_type);
         }
-        // Tags: 1-indexed, 4-digit zero-padded, format: freq:key=value
-        for (i, tag) in event.tags.iter().enumerate() {
-            let key = format!("tag_{:04}", i + 1);
-            let val = format!("{}:{}={}", tag.frequency, tag.key, tag.value);
-            h.add(&key, &val);
+        // Tags: 1-indexed, 4-digit zero-padded, format: freq:key=value.
+        // neural_memory.tags is canonical (Go parity); event.tags is a legacy fallback.
+        let nm_tags = msg.neural_memory.as_ref().map(|nm| &nm.tags).filter(|t| !t.is_empty());
+        let tags: Vec<(i32, &str, String)> = match nm_tags {
+            Some(tags) => tags
+                .iter()
+                .map(|t| (t.frequency, t.key.as_str(), super::encoder::serialize_tag_value(&t.value)))
+                .collect(),
+            None => event
+                .tags
+                .iter()
+                .map(|t| (t.frequency, t.key.as_str(), t.value.clone()))
+                .collect(),
+        };
+        for (i, (freq, key, value)) in tags.iter().enumerate() {
+            h.add(&format!("tag_{:04}", i + 1), &format!("{freq}:{key}={value}"));
         }
     }
     h.add_if_nonempty("_msg_id", &msg.envelope.message_id);

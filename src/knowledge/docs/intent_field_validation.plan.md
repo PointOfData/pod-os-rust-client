@@ -429,21 +429,29 @@ case if GetEventOptions.GetLinks = true:
 - Newline separated links; tab-separated fields
 - Format: _link={linkId}	unique_id=	target_event=	target_unique_id=	strength=	link_time=	category=
 - If links exist, do not duplicate in Payload.Data
-- `Response.EventRecords.Links[]` from links
+- Decode each row as **`Linked`** (viewer-perspective adjacency), not write `LinkFields`
+- `Linked.id` ← `_link`
+- `Linked.unique_id` ← `unique_id`
+- `Linked.source_id` / `Linked.source_unique_id` ← **request / returned** `Event.id` / `Event.unique_id` (source is not on the `_link=` line; header `_event_id` / `_unique_id` are fallbacks)
+- `Linked.target_id` / `Linked.target_unique_id` ← `target_event` / `target_unique_id`
+- `Linked.strength` ← `strength` (source → target only; inbound and outbound both look like returned-object → neighbor)
+- `Linked.category` ← `category`
+- `Response.EventRecords.Links[]` is `Vec<Linked>`
+- `LinkFields.strength_a` / `strength_b` are write-only (LinkEvent / StoreBatchLinks)
 
 case if Request NeuralMemory.GetEvent.GetEventOptions.GetLinkTags = true:
 
 - Newline separated tags; tab-separated fields
 - Format: _linktag	event_id={linkId}	unique=	freq=	timestamp=	value=
 - If tags exist, do not duplicate in Payload.Data
-- `Response.EventRecords.Links.[]LinkFields` from tags
+- `Response.EventRecords.Links.[]Linked.tags` from tags
 
 case if Request NeuralMemory.GetEvent.GetEventOptions.GetTargetTags = true:
 
 - Newline separated tags; tab-separated fields
 - Format: _target_event_tag	event_id={targetEventId}	unique=	freq=	timestamp=	value=
 - If tags exist, do not duplicate in Payload.Data
-- `Response.EventRecords.Links.[]LinkFields` from tags
+- `Response.EventRecords.Links.[]Linked.target_tags` from tags
 
 **GetEventsForTags**
 {Intent}
@@ -550,18 +558,21 @@ BufferResults case: if Request NeuralMemory.GetEventsForTags.BufferResults = 'Y'
 
 -- case line has prefix `_link`:
 --- format: tab-separated field=value
---- `Response.EventRecords.Event.Links` non-nil REQUIRED
---- `Link.Id` mapped from `_link`_ REQUIRED
---- `Link.EventA` mapped from `source` REQUIRED
---- `Link.EventB` mapped from `target` REQUIRED
---- `Link.Category` mapped from `category` REQUIRED
---- `Link.UniqueIdB` mapped from `target_unique_id` OPTIONAL
-
+--- Decode as **`Linked`** (same type as GetEvent). Perspective is the matching event (source on the wire).
+--- `Response.EventRecords.Event.Links` is `Vec<Linked>` REQUIRED
+--- `Linked.id` mapped from `_link` REQUIRED
+--- `Linked.unique_id` mapped from `unique_id` OPTIONAL
+--- `Linked.source_id` mapped from `source` REQUIRED
+--- `Linked.source_unique_id` mapped from `source_unique_id` OPTIONAL (else parent event unique_id)
+--- `Linked.target_id` mapped from `target` REQUIRED
+--- `Linked.target_unique_id` mapped from `target_unique_id` OPTIONAL
+--- `Linked.strength` mapped from `strength` (source → target only)
+--- `Linked.category` mapped from `category` REQUIRED
 
 -- case line has prefix `_linktag`: 
 --- format: tab-separated field=value
---- `Response.EventRecords.Event.Links.Link.Tags` non-nil REQUIRED
---- _linktag= defines corresponding Link.Id REQUIRED
+--- `Response.EventRecords.Event.Links.Linked.tags` non-nil REQUIRED
+--- _linktag= defines corresponding Linked.id REQUIRED
 --- `value=` mapped to format: {Tag.Key}={Tag.Value} REQUIRED
 --- `freq=` mapped to `Tag.Frequency` OPTIONAL
 --- `owner` mapped to `Tag.Owner` OPTIONAL
@@ -570,7 +581,7 @@ BufferResults case: if Request NeuralMemory.GetEventsForTags.BufferResults = 'Y'
 
 -- case line has prefix `_targettag`:
 --- format: tab-separated field=value
---- `Response.EventRecords.Event.Links.Link.TargetTags` non-nil REQUIRED
+--- `Response.EventRecords.Event.Links.Linked.target_tags` non-nil REQUIRED
 --- _targettag_= mapped to `Tag.TargetTagId` REQUIRED
 --- `value=` mapped to format: {`Tag.Key`}={`Tag.Value`} REQUIRED
 --- `freq=` mapped to `Tag.Frequency` OPTIONAL

@@ -35,7 +35,7 @@ pub use intents::{
 pub use tag_format::apply_tag_owner_output;
 pub use types::{
     BatchEventSpec, BatchLinkEventSpec, BriefHitRecord, DataType, DateTimeObject, Envelope,
-    EventFields, GetEventOptions, GetEventsForTagsOptions, LinkFields, Message, NeuralMemoryFields,
+    EventFields, GetEventOptions, GetEventsForTagsOptions, LinkFields, Linked, Message, NeuralMemoryFields,
     NullInt, PayloadData, PayloadFields, ResponseFields, SearchOptions, SocketMessage,
     StoreBatchEventRecord, StoreLinkBatchEventRecord, Tag, TagList, TagOutput, TagOwnerOutput,
     TagValue,

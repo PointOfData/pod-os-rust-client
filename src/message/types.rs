@@ -207,6 +207,22 @@ pub struct LinkFields {
     pub message: String,
 }
 
+/// One directed adjacency from the searched or returned event to a neighbor.
+/// Strength is always source → target. Write-side A/B weights stay on [`LinkFields`].
+#[derive(Debug, Clone, Default)]
+pub struct Linked {
+    pub id: String,
+    pub unique_id: String,
+    pub source_id: String,
+    pub source_unique_id: String,
+    pub target_id: String,
+    pub target_unique_id: String,
+    pub strength: f64,
+    pub category: String,
+    pub tags: Vec<TagOutput>,
+    pub target_tags: Vec<TagOutput>,
+}
+
 // ─────────────────────────────────────────────
 // Event fields
 // ─────────────────────────────────────────────
@@ -224,7 +240,7 @@ pub struct EventFields {
     pub location_separator: String,
     pub r#type: String,
     pub tags: Vec<TagOutput>,
-    pub links: Vec<LinkFields>,
+    pub links: Vec<Linked>,
     pub payload_data: PayloadFields,
     pub status: String,
     pub hits: i32,

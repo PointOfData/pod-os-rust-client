@@ -7,7 +7,7 @@ use crate::message::{
     errors::{DecodeError, MsgErrCode},
     intents, tag_format,
     types::{
-        BriefHitRecord, Envelope, EventFields, LinkFields, Message, PayloadData, PayloadFields,
+        BriefHitRecord, Envelope, EventFields, LinkFields, Linked, Message, PayloadData, PayloadFields,
         ResponseFields, StoreBatchEventRecord, StoreLinkBatchEventRecord, TagOutput,
     },
 };
@@ -350,7 +350,7 @@ fn decode_event_field(key: &str, val: &str, event: &mut EventFields) {
 fn parse_get_events_for_tags_payload(msg: &mut Message, payload: &str) {
     let mut events: Vec<EventFields> = Vec::new();
     let mut brief_hits: Vec<BriefHitRecord> = Vec::new();
-    let mut event_links: HashMap<String, Vec<LinkFields>> = HashMap::new();
+    let mut event_links: HashMap<String, Vec<Linked>> = HashMap::new();
     let mut link_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
     let mut target_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
     let mut event_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
@@ -383,8 +383,8 @@ fn parse_get_events_for_tags_payload(msg: &mut Message, payload: &str) {
                 });
             }
         } else if let Some(rest) = line.strip_prefix("_link=") {
-            let lf = parse_link_line(rest);
-            let event_id = lf.event_a.clone();
+            let lf = parse_gft_linked(rest);
+            let event_id = lf.source_id.clone();
             event_links.entry(event_id).or_default().push(lf);
         } else if let Some(rest) = line.strip_prefix("_linktag=") {
             // _linktag=linkId\tfreq\tcategory\tvalue
@@ -408,12 +408,14 @@ fn parse_get_events_for_tags_payload(msg: &mut Message, payload: &str) {
                 if let Some(lt) = link_tags.remove(&link.id) {
                     link.tags = lt;
                 }
-                if let Some(tt) = target_tags.remove(&link.event_b) {
+                if let Some(tt) = target_tags.remove(&link.target_id) {
                     link.target_tags = tt;
                 }
-                // Populate unique_id_a from parent event's unique_id (links are stored on the source event)
-                if link.unique_id_a.is_empty() && !event.unique_id.is_empty() {
-                    link.unique_id_a = event.unique_id.clone();
+                if link.source_unique_id.is_empty() && !event.unique_id.is_empty() {
+                    link.source_unique_id = event.unique_id.clone();
+                }
+                if link.source_id.is_empty() && !event.id.is_empty() {
+                    link.source_id = event.id.clone();
                 }
                 event.links.push(link);
             }
@@ -489,7 +491,7 @@ fn apply_event_fields(fields: &HashMap<String, String>, e: &mut EventFields) {
 fn parse_get_events_for_tags_inline_header(msg: &mut Message, header: &str) {
     let mut events: Vec<EventFields> = Vec::new();
     let mut brief_hits: Vec<BriefHitRecord> = Vec::new();
-    let mut event_links: HashMap<String, Vec<LinkFields>> = HashMap::new();
+    let mut event_links: HashMap<String, Vec<Linked>> = HashMap::new();
     let mut link_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
     let mut target_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
     let mut event_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
@@ -544,8 +546,8 @@ fn parse_get_events_for_tags_inline_header(msg: &mut Message, header: &str) {
                 });
             }
             "_link" => {
-                let lf = parse_link_line(val);
-                let event_id = lf.event_a.clone();
+                let lf = parse_gft_linked(val);
+                let event_id = lf.source_id.clone();
                 event_links.entry(event_id).or_default().push(lf);
             }
             "_linktag" => {
@@ -600,11 +602,14 @@ fn parse_get_events_for_tags_inline_header(msg: &mut Message, header: &str) {
                 if let Some(lt) = link_tags.remove(&link.id) {
                     link.tags = lt;
                 }
-                if let Some(tt) = target_tags.remove(&link.event_b) {
+                if let Some(tt) = target_tags.remove(&link.target_id) {
                     link.target_tags = tt;
                 }
-                if link.unique_id_a.is_empty() && !event.unique_id.is_empty() {
-                    link.unique_id_a = event.unique_id.clone();
+                if link.source_unique_id.is_empty() && !event.unique_id.is_empty() {
+                    link.source_unique_id = event.unique_id.clone();
+                }
+                if link.source_id.is_empty() && !event.id.is_empty() {
+                    link.source_id = event.id.clone();
                 }
                 event.links.push(link);
             }
@@ -631,28 +636,81 @@ fn parse_inline_tag(key: &str, value: &str) -> Option<TagOutput> {
     })
 }
 
-fn parse_link_line(s: &str) -> LinkFields {
+fn linked_id_from_rest(s: &str, fields: &HashMap<String, String>) -> String {
+    if let Some(first) = s.split('\t').next() {
+        if !first.is_empty() && !first.contains('=') {
+            return first.to_string();
+        }
+    }
+    fields.get("_link").cloned().unwrap_or_default()
+}
+
+/// GetEventsForTags `_link=` — source is already on the line (hit E's view).
+fn parse_gft_linked(s: &str) -> Linked {
     let fields = parse_tab_line(s);
-    LinkFields {
-        id: fields.get("link_id").cloned().unwrap_or_default(),
-        event_a: fields.get("event_id_a").cloned().unwrap_or_default(),
-        event_b: fields.get("event_id_b").cloned().unwrap_or_default(),
-        unique_id_a: fields.get("unique_id_a").cloned().unwrap_or_default(),
-        unique_id_b: fields.get("unique_id_b").cloned().unwrap_or_default(),
-        strength_a: fields
-            .get("strength_a")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0.0),
-        strength_b: fields
-            .get("strength_b")
+    Linked {
+        id: linked_id_from_rest(s, &fields),
+        unique_id: fields.get("unique_id").cloned().unwrap_or_default(),
+        source_id: fields.get("source").cloned().unwrap_or_default(),
+        source_unique_id: fields
+            .get("source_unique_id")
+            .cloned()
+            .unwrap_or_default(),
+        target_id: fields.get("target").cloned().unwrap_or_default(),
+        target_unique_id: fields
+            .get("target_unique_id")
+            .cloned()
+            .unwrap_or_default(),
+        strength: fields
+            .get("strength")
             .and_then(|v| v.parse().ok())
             .unwrap_or(0.0),
         category: fields.get("category").cloned().unwrap_or_default(),
-        r#type: fields.get("type").cloned().unwrap_or_default(),
-        owner: fields.get("owner").cloned().unwrap_or_default(),
-        timestamp: fields.get("timestamp").cloned().unwrap_or_default(),
         ..Default::default()
     }
+}
+
+/// GetEvent `_link=` — source is the request / returned event, not on the line.
+fn parse_get_event_linked(
+    s: &str,
+    hm: &HashMap<String, String>,
+    request: Option<&EventFields>,
+) -> Linked {
+    let fields = parse_tab_line(s);
+    let mut link = Linked {
+        id: linked_id_from_rest(s, &fields),
+        unique_id: fields.get("unique_id").cloned().unwrap_or_default(),
+        target_id: fields.get("target_event").cloned().unwrap_or_default(),
+        target_unique_id: fields
+            .get("target_unique_id")
+            .cloned()
+            .unwrap_or_default(),
+        strength: fields
+            .get("strength")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.0),
+        category: fields.get("category").cloned().unwrap_or_default(),
+        ..Default::default()
+    };
+    if let Some(req) = request {
+        link.source_id = req.id.clone();
+        link.source_unique_id = req.unique_id.clone();
+    }
+    if link.source_id.is_empty() {
+        link.source_id = hm
+            .get("event_id")
+            .cloned()
+            .or_else(|| hm.get("_event_id").cloned())
+            .unwrap_or_default();
+    }
+    if link.source_unique_id.is_empty() {
+        link.source_unique_id = hm
+            .get("_unique_id")
+            .cloned()
+            .or_else(|| hm.get("unique_id").cloned())
+            .unwrap_or_default();
+    }
+    link
 }
 
 fn parse_tag_output_line(s: &str) -> Option<TagOutput> {
@@ -668,6 +726,28 @@ fn parse_tag_output_line(s: &str) -> Option<TagOutput> {
     })
 }
 
+/// GetEvent `_linktag` / `_target_event_tag` key=value rows.
+/// Format: `_linktag	event_id={id}	unique=	freq=	timestamp=	value=`
+fn parse_get_event_kv_tag_line(line: &str, id_key: &str) -> Option<(String, TagOutput)> {
+    let fields = parse_tab_line(line);
+    let id = fields.get(id_key).cloned().filter(|s| !s.is_empty())?;
+    let value = fields.get("value").cloned().unwrap_or_default();
+    let (key, val) = match value.split_once('=') {
+        Some((k, v)) if !k.is_empty() => (k.to_string(), v.to_string()),
+        _ => (String::new(), value),
+    };
+    Some((
+        id,
+        TagOutput {
+            frequency: fields.get("freq").and_then(|v| v.parse().ok()).unwrap_or(0),
+            key,
+            value: val,
+            timestamp: fields.get("timestamp").cloned().unwrap_or_default(),
+            ..Default::default()
+        },
+    ))
+}
+
 // ── GetEvent response parser ─────────────────────────────────────────────────
 
 fn parse_get_event_response(msg: &mut Message, hm: &HashMap<String, String>, payload: &str) {
@@ -680,40 +760,66 @@ fn parse_get_event_response(msg: &mut Message, hm: &HashMap<String, String>, pay
     tag_format::sort_tags_by_number(&mut tags);
 
     // Payload-embedded links (when get_links=Y). send_data blob stays on msg.payload.
-    let mut links: Vec<LinkFields> = Vec::new();
+    let request_snapshot = msg.event.clone();
+    let mut links: Vec<Linked> = Vec::new();
     let mut link_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
+    let mut target_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
 
     for line in payload.lines() {
         if line.is_empty() {
             continue;
         }
         if let Some(rest) = line.strip_prefix("_link=") {
-            links.push(parse_link_line(rest));
-        } else if let Some(rest) = line.strip_prefix("_linktag\t") {
-            if let Some(t) = parse_tag_output_line(rest) {
-                let link_id = rest.split('\t').next().unwrap_or("").to_string();
-                link_tags.entry(link_id).or_default().push(t);
+            links.push(parse_get_event_linked(
+                rest,
+                hm,
+                request_snapshot.as_ref(),
+            ));
+        } else if line.starts_with("_linktag") {
+            if let Some((link_id, tag)) = parse_get_event_kv_tag_line(line, "event_id") {
+                link_tags.entry(link_id).or_default().push(tag);
+            } else if let Some(rest) = line.strip_prefix("_linktag\t") {
+                if let Some(t) = parse_tag_output_line(rest) {
+                    let link_id = rest.split('\t').next().unwrap_or("").to_string();
+                    link_tags.entry(link_id).or_default().push(t);
+                }
             }
-        } else if line.starts_with("_targettag") {
-            // target tag record; not surfaced here
+        } else if line.starts_with("_target_event_tag") || line.starts_with("_targettag") {
+            if let Some((target_id, tag)) = parse_get_event_kv_tag_line(line, "event_id") {
+                target_tags.entry(target_id).or_default().push(tag);
+            } else if let Some(rest) = line
+                .strip_prefix("_targettag=")
+                .or_else(|| line.strip_prefix("_target_event_tag="))
+            {
+                if let Some(t) = parse_tag_output_line(rest) {
+                    let event_id = rest.split('\t').next().unwrap_or("").to_string();
+                    target_tags.entry(event_id).or_default().push(t);
+                }
+            }
         }
     }
 
-    // Attach link tags
+    // Attach link tags and optional target tags
     for link in &mut links {
         if let Some(lt) = link_tags.remove(&link.id) {
             link.tags = lt;
+        }
+        if let Some(tt) = target_tags.remove(&link.target_id) {
+            link.target_tags = tt;
         }
     }
 
     // Apply to event
     let event = msg.event.get_or_insert_with(EventFields::default);
     event.tags = tags;
-    // Populate unique_id_a from parent event's unique_id (links are stored on the source event)
+    let event_id = event.id.clone();
     let event_uid = event.unique_id.clone();
     for link in &mut links {
-        if link.unique_id_a.is_empty() && !event_uid.is_empty() {
-            link.unique_id_a = event_uid.clone();
+        if link.source_unique_id.is_empty() && !event_uid.is_empty() {
+            link.source_unique_id = event_uid.clone();
+        }
+        if link.source_id.is_empty() && !event_id.is_empty() {
+            link.source_id = event_id.clone();
         }
     }
     event.links = links;
@@ -915,7 +1021,7 @@ mod tests {
     use crate::message::{
         encoder::encode_message,
         intents,
-        types::{Envelope, EventFields, Message, ResponseFields},
+        types::{Envelope, EventFields, Linked, Message, ResponseFields},
     };
 
     #[test]
@@ -998,21 +1104,41 @@ mod tests {
         assert!(event.owner.is_empty(), "tag owner must not leak into event owner");
     }
 
-    #[test]
-    fn get_events_for_tags_links_populate_unique_id_a() {
-        let payload = "_event_id=evt1\tunique_id=src_uid\n\
-                       _link=event_id_a=evt1\tevent_id_b=evt2\tunique_id_b=tgt_uid\tstrength_a=0.9\tcategory=describes";
-        let mut msg = Message {
-            response: Some(ResponseFields::default()),
-            ..Default::default()
-        };
-        parse_get_events_for_tags_payload(&mut msg, payload);
+    fn wire_frame(header: &str, payload: &str, msg_type: i32) -> Vec<u8> {
+        let to = b"iris@gw.local";
+        let from = b"memory@gw.local";
+        let hdr = header.as_bytes();
+        let pay = payload.as_bytes();
+        let total = 63 + to.len() + from.len() + hdr.len() + pay.len();
+        let mut buf = Vec::with_capacity(total);
+        buf.extend_from_slice(format!("x{:08x}", total).as_bytes());
+        buf.extend_from_slice(format!("x{:08x}", to.len()).as_bytes());
+        buf.extend_from_slice(format!("x{:08x}", from.len()).as_bytes());
+        buf.extend_from_slice(format!("x{:08x}", hdr.len()).as_bytes());
+        buf.extend_from_slice(format!("{:09}", msg_type).as_bytes());
+        buf.extend_from_slice(format!("{:09}", 0).as_bytes());
+        buf.extend_from_slice(format!("x{:08x}", pay.len()).as_bytes());
+        buf.extend_from_slice(to);
+        buf.extend_from_slice(from);
+        buf.extend_from_slice(hdr);
+        buf.extend_from_slice(pay);
+        buf
+    }
 
-        let events = &msg.response.unwrap().event_records;
+    #[test]
+    fn get_events_for_tags_links_decode_as_linked() {
+        let header = "_type=events_for_tag\t_status=OK\t_count=1";
+        let payload = "_event_id=evt1\tunique_id=src_uid\n\
+                       _link=link1\tsource=evt1\tsource_unique_id=src_uid\ttarget=evt2\ttarget_unique_id=tgt_uid\tstrength=0.9\tcategory=describes";
+        let decoded = decode_message(&wire_frame(header, payload, 1001)).unwrap();
+
+        let events = &decoded.response.unwrap().event_records;
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].links.len(), 1);
-        assert_eq!(events[0].links[0].unique_id_a, "src_uid");
-        assert_eq!(events[0].links[0].unique_id_b, "tgt_uid");
+        let link = &events[0].links[0];
+        assert_eq!(link.source_unique_id, "src_uid");
+        assert_eq!(link.target_unique_id, "tgt_uid");
+        assert_eq!(link.strength, 0.9);
     }
 
     #[test]
@@ -1038,25 +1164,48 @@ mod tests {
     }
 
     #[test]
-    fn get_event_response_links_populate_unique_id_a() {
-        let payload = "_link=event_id_b=evt2\tunique_id_b=tgt_uid\tstrength_a=0.9\tcategory=describes";
-        let mut hm = HashMap::new();
-        hm.insert("event_id".to_string(), "evt1".to_string());
+    fn get_event_response_links_decode_as_linked() {
+        let header = "_type=get\t_status=OK\t_event_id=evt1\t_unique_id=src_uid";
+        let payload = "_link=link1\ttarget_event=evt2\ttarget_unique_id=tgt_uid\tstrength=0.9\tcategory=describes";
+        let decoded = decode_message(&wire_frame(header, payload, 1001)).unwrap();
 
-        let mut msg = Message {
-            event: Some(EventFields {
-                id: "evt1".to_string(),
-                unique_id: "src_uid".to_string(),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        parse_get_event_response(&mut msg, &hm, payload);
-
-        let event = msg.event.unwrap();
+        let event = decoded.event.unwrap();
         assert_eq!(event.links.len(), 1);
-        assert_eq!(event.links[0].unique_id_a, "src_uid");
-        assert_eq!(event.links[0].unique_id_b, "tgt_uid");
+        let link = &event.links[0];
+        assert_eq!(link.source_unique_id, "src_uid");
+        assert_eq!(link.target_unique_id, "tgt_uid");
+        assert_eq!(link.strength, 0.9);
+    }
+
+    #[test]
+    fn get_event_viewer_perspective_linked() {
+        let header = "_type=get\t_status=OK\t_event_id=evt_a\t_unique_id=eo_seed_a";
+        let payload = "_link=+1\tunique_id=lk_a_to_x\ttarget_event=evt_x\ttarget_unique_id=eo_nbr_x\tstrength=0.750000\tcategory=supplies_to\n\
+                       _link=+2\tunique_id=lk_b_to_a\ttarget_event=evt_b\ttarget_unique_id=eo_nbr_b\tstrength=0.250000\tcategory=supplies_to";
+        let decoded = decode_message(&wire_frame(header, payload, 1001)).unwrap();
+
+        let event = decoded.event.unwrap();
+        assert_eq!(event.links.len(), 2);
+        let by_uid: HashMap<&str, &Linked> =
+            event.links.iter().map(|lk| (lk.unique_id.as_str(), lk)).collect();
+        let out = by_uid["lk_a_to_x"];
+        let inbound = by_uid["lk_b_to_a"];
+        assert_eq!(
+            (
+                out.source_unique_id.as_str(),
+                out.target_unique_id.as_str(),
+                out.strength
+            ),
+            ("eo_seed_a", "eo_nbr_x", 0.75)
+        );
+        assert_eq!(
+            (
+                inbound.source_unique_id.as_str(),
+                inbound.target_unique_id.as_str(),
+                inbound.strength
+            ),
+            ("eo_seed_a", "eo_nbr_b", 0.25)
+        );
     }
 
     /// ENM routes GetEventsForTags responses with message_type=11 (ACTOR_RECORD)
