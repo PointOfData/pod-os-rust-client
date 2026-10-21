@@ -293,7 +293,11 @@ impl Client {
                 }
                 Ok(Err(e)) => {
                     self.connected.store(false, Ordering::Release);
-                    return Err(GatewayDError::wrap(ErrCode::ConnectionLost, "write error", e));
+                    return Err(GatewayDError::wrap(
+                        ErrCode::ConnectionLost,
+                        "write error",
+                        e,
+                    ));
                 }
                 Ok(Ok(n)) => n,
             };

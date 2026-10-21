@@ -42,7 +42,7 @@ pub fn encode_message(
     )?;
 
     // ── Header ───────────────────────────────────────────────────────────────
-    let header = construct_header(msg, &msg.envelope.intent, conversation_uuid);
+    let header = construct_header(msg, &msg.envelope.intent, conversation_uuid)?;
     let to = msg.envelope.to.as_bytes();
     let from = msg.envelope.from.as_bytes();
     let header_bytes = header.as_bytes();
@@ -170,7 +170,7 @@ fn build_payload(
             .as_ref()
             .map(|n| n.batch_links.as_slice())
             .unwrap_or(&[]);
-        return Ok(format_batch_link_events_payload(specs));
+        return format_batch_link_events_payload(specs);
     }
     if *intent == STORE_BATCH_TAGS {
         // Prefer NeuralMemory.Tags, fall back to Payload data
@@ -222,9 +222,19 @@ pub fn format_batch_events_payload(events: &[BatchEventSpec]) -> String {
 }
 
 /// Format a batch of link+event specs as newline-separated records.
-pub fn format_batch_link_events_payload(events: &[BatchLinkEventSpec]) -> String {
+///
+/// Each link must include non-zero `strength_a` and `strength_b` (positive or
+/// negative) and a non-empty `category`. Omitting any of them makes the actor
+/// drop the link.
+pub fn format_batch_link_events_payload(
+    events: &[BatchLinkEventSpec],
+) -> Result<String, EncodeError> {
     let mut out = String::new();
     for (i, spec) in events.iter().enumerate() {
+        crate::message::header::require_link_wire_fields(
+            Some(&spec.link),
+            &format!("batch link {i}"),
+        )?;
         if i > 0 {
             out.push('\n');
         }
@@ -242,20 +252,14 @@ pub fn format_batch_link_events_payload(events: &[BatchLinkEventSpec]) -> String
         if !l.unique_id_b.is_empty() {
             push_field(&mut out, "unique_id_b", &l.unique_id_b);
         }
-        if l.strength_a != 0.0 {
-            push_field(&mut out, "strength_a", &l.strength_a.to_string());
-        }
-        if l.strength_b != 0.0 {
-            push_field(&mut out, "strength_b", &l.strength_b.to_string());
-        }
-        if !l.category.is_empty() {
-            push_field(&mut out, "category", &l.category);
-        }
+        push_field(&mut out, "strength_a", &l.strength_a.to_string());
+        push_field(&mut out, "strength_b", &l.strength_b.to_string());
+        push_field(&mut out, "category", &l.category);
         if !l.r#type.is_empty() {
             push_field(&mut out, "type", &l.r#type);
         }
     }
-    out
+    Ok(out)
 }
 
 fn append_event_fields(out: &mut String, e: &crate::message::types::EventFields) {
@@ -410,9 +414,7 @@ mod tests {
 
     #[test]
     fn get_events_for_tags_header_includes_buffer_results() {
-        use crate::message::types::{
-            GetEventsForTagsOptions, NeuralMemoryFields,
-        };
+        use crate::message::types::{GetEventsForTagsOptions, NeuralMemoryFields};
         let mut msg = minimal_msg(&intents::GET_EVENTS_FOR_TAGS);
         msg.neural_memory = Some(NeuralMemoryFields {
             get_events_for_tags: Some(GetEventsForTagsOptions {
@@ -434,12 +436,122 @@ mod tests {
         assert_eq!(decoded.envelope.intent, intents::GET_EVENTS_FOR_TAGS);
 
         let raw = std::str::from_utf8(sm.as_bytes()).unwrap();
-        assert!(raw.contains("buffer_results=Y"), "header must contain buffer_results=Y");
-        assert!(raw.contains("get_all_data=Y"), "header must contain get_all_data=Y");
-        assert!(raw.contains("buffer_format=0"), "header must contain buffer_format=0");
+        assert!(
+            raw.contains("buffer_results=Y"),
+            "header must contain buffer_results=Y"
+        );
+        assert!(
+            raw.contains("get_all_data=Y"),
+            "header must contain get_all_data=Y"
+        );
+        assert!(
+            raw.contains("buffer_format=0"),
+            "header must contain buffer_format=0"
+        );
 
         let msg_type_field = &sm.as_bytes()[36..45];
         let msg_type = std::str::from_utf8(msg_type_field).unwrap();
-        assert_eq!(msg_type, "000001000", "request message_type must be 1000 (MEM_REQ)");
+        assert_eq!(
+            msg_type, "000001000",
+            "request message_type must be 1000 (MEM_REQ)"
+        );
+    }
+
+    fn sample_link(
+        strength_a: f64,
+        strength_b: f64,
+        category: &str,
+    ) -> crate::message::types::LinkFields {
+        crate::message::types::LinkFields {
+            event_a: "evt-a".into(),
+            event_b: "evt-b".into(),
+            strength_a,
+            strength_b,
+            category: category.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn link_header_rejects_zero_strength_and_missing_category() {
+        use crate::message::types::NeuralMemoryFields;
+        let mut msg = minimal_msg(&intents::LINK_EVENT);
+        msg.neural_memory = Some(NeuralMemoryFields {
+            link: Some(sample_link(0.0, 1.0, "related")),
+            ..Default::default()
+        });
+        let err = encode_message(&msg, "").unwrap_err();
+        assert_eq!(err.field.as_deref(), Some("strength_a"));
+
+        msg.neural_memory = Some(NeuralMemoryFields {
+            link: Some(sample_link(1.0, 0.0, "related")),
+            ..Default::default()
+        });
+        let err = encode_message(&msg, "").unwrap_err();
+        assert_eq!(err.field.as_deref(), Some("strength_b"));
+
+        msg.neural_memory = Some(NeuralMemoryFields {
+            link: Some(sample_link(1.0, -0.5, "")),
+            ..Default::default()
+        });
+        let err = encode_message(&msg, "").unwrap_err();
+        assert_eq!(err.field.as_deref(), Some("category"));
+
+        msg.neural_memory = Some(NeuralMemoryFields {
+            link: Some(sample_link(f64::NAN, 1.0, "related")),
+            ..Default::default()
+        });
+        let err = encode_message(&msg, "").unwrap_err();
+        assert_eq!(err.field.as_deref(), Some("strength_a"));
+
+        msg.neural_memory = Some(NeuralMemoryFields {
+            link: Some(sample_link(1.0, f64::INFINITY, "related")),
+            ..Default::default()
+        });
+        let err = encode_message(&msg, "").unwrap_err();
+        assert_eq!(err.field.as_deref(), Some("strength_b"));
+    }
+
+    #[test]
+    fn link_header_writes_negative_strength() {
+        use crate::message::types::NeuralMemoryFields;
+        let mut msg = minimal_msg(&intents::LINK_EVENT);
+        msg.neural_memory = Some(NeuralMemoryFields {
+            link: Some(sample_link(-1.5, 0.25, "related")),
+            ..Default::default()
+        });
+        let sm = encode_message(&msg, "").unwrap();
+        let raw = std::str::from_utf8(sm.as_bytes()).unwrap();
+        assert!(raw.contains("strength_a=-1.5"));
+        assert!(raw.contains("strength_b=0.25"));
+        assert!(raw.contains("category=related"));
+    }
+
+    #[test]
+    fn batch_link_payload_rejects_zero_strength_and_writes_negative() {
+        use crate::message::types::{BatchLinkEventSpec, EventFields};
+
+        let bad = BatchLinkEventSpec {
+            event: EventFields::default(),
+            link: sample_link(1.0, 0.0, "related"),
+        };
+        let err = format_batch_link_events_payload(&[bad]).unwrap_err();
+        assert_eq!(err.field.as_deref(), Some("strength_b"));
+
+        let missing_category = BatchLinkEventSpec {
+            event: EventFields::default(),
+            link: sample_link(1.0, 1.0, ""),
+        };
+        let err = format_batch_link_events_payload(&[missing_category]).unwrap_err();
+        assert_eq!(err.field.as_deref(), Some("category"));
+
+        let ok = BatchLinkEventSpec {
+            event: EventFields::default(),
+            link: sample_link(-0.5, 1.0, "related"),
+        };
+        let payload = format_batch_link_events_payload(&[ok]).unwrap();
+        assert!(payload.contains("strength_a=-0.5"));
+        assert!(payload.contains("strength_b=1"));
+        assert!(payload.contains("category=related"));
     }
 }

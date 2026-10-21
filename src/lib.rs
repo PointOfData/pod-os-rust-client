@@ -88,15 +88,15 @@ pub use client::{
 };
 pub use config::Config;
 pub use config_loaders::{config_from_env, config_from_ini};
-pub use health::{build_status_health_reply, respond_to_health_checks};
-pub use readiness::{
-    actor_health_probe_succeeded, build_actor_health_probe_message,
-    is_neural_memory_backed_for_health_probe, wait_for_actor_aip_ready,
-    wait_for_gateway_aip_ready, ActorAIPReadinessConfig, GatewayReadinessProbe,
-};
 pub use errors::{ErrCode, GatewayDError};
+pub use health::{build_status_health_reply, respond_to_health_checks};
 pub use log::{Level, Logger, NoOpLogger, TracingLogger};
 pub use message::{
     decode_message, encode_message, get_timestamp, get_timestamp_from_time, Envelope, Intent,
     Message, SocketMessage,
+};
+pub use readiness::{
+    actor_health_probe_succeeded, build_actor_health_probe_message,
+    is_neural_memory_backed_for_health_probe, wait_for_actor_aip_ready, wait_for_gateway_aip_ready,
+    ActorAIPReadinessConfig, GatewayReadinessProbe,
 };

@@ -70,11 +70,7 @@ impl std::fmt::Display for ValidationReport {
             } else {
                 format!(" ({})", e.wire_field)
             };
-            writeln!(
-                f,
-                "{} {} / {}{}: {}",
-                tag, e.intent, e.field, wire, e.rule
-            )?;
+            writeln!(f, "{} {} / {}{}: {}", tag, e.intent, e.field, wire, e.rule)?;
             writeln!(f, "  What: {}", e.message)?;
             if !e.fix.is_empty() {
                 writeln!(f, "  Fix:  {}", e.fix)?;
@@ -695,7 +691,9 @@ fn validate_wire_yn(
             field,
             key,
             "header_value",
-            &format!("{key} must be Y or N; got {v:?}. A bare flag without =Y is ignored by Pod-OS."),
+            &format!(
+                "{key} must be Y or N; got {v:?}. A bare flag without =Y is ignored by Pod-OS."
+            ),
             &format!("Send {key}=Y (set {field})."),
             code,
         );
@@ -799,6 +797,20 @@ fn validate_link_event(msg: &Message, errs: &mut ValidationErrors) {
         "category",
         &link.category,
         "Category is required for LinkEvent",
+    );
+    require_nonzero_strength(
+        errs,
+        intent,
+        "Link.StrengthA",
+        "strength_a",
+        link.strength_a,
+    );
+    require_nonzero_strength(
+        errs,
+        intent,
+        "Link.StrengthB",
+        "strength_b",
+        link.strength_b,
     );
     required_field(
         errs,
@@ -1017,10 +1029,7 @@ fn validate_store_batch_links(msg: &Message, errs: &mut ValidationErrors) {
                 errs,
                 "error",
                 intent,
-                &format!(
-                    "{}.Link.EventA+EventB / UniqueIdA+UniqueIdB",
-                    prefix
-                ),
+                &format!("{}.Link.EventA+EventB / UniqueIdA+UniqueIdB", prefix),
                 "event_id_a+event_id_b / unique_id_a+unique_id_b",
                 "one_of_required",
                 &format!(
@@ -1044,6 +1053,20 @@ fn validate_store_batch_links(msg: &Message, errs: &mut ValidationErrors) {
                 "",
             );
         }
+        require_nonzero_strength(
+            errs,
+            intent,
+            &format!("{}.Link.StrengthA", prefix),
+            "strength_a",
+            l.strength_a,
+        );
+        require_nonzero_strength(
+            errs,
+            intent,
+            &format!("{}.Link.StrengthB", prefix),
+            "strength_b",
+            l.strength_b,
+        );
         if l.owner_id.is_empty() && l.owner_unique_id.is_empty() {
             push_err(
                 errs,
@@ -1082,10 +1105,7 @@ fn validate_store_batch_links(msg: &Message, errs: &mut ValidationErrors) {
                 &format!("{}.Link.LocationSeparator", prefix),
                 "loc_delim",
                 "required",
-                &format!(
-                    "Link location separator is required for batch link {}",
-                    i
-                ),
+                &format!("Link location separator is required for batch link {}", i),
                 "Set link.location_separator",
                 "",
             );
@@ -1249,11 +1269,7 @@ pub fn validate_raw_message(raw: &[u8]) -> ValidationErrors {
             "raw",
             "wire",
             "format",
-            &format!(
-                "Message {} bytes exceeds limit {} bytes",
-                raw.len(),
-                max
-            ),
+            &format!("Message {} bytes exceeds limit {} bytes", raw.len(), max),
             "Reduce message size or increase MaxMessageSizeBytes",
             "",
         );
@@ -1408,8 +1424,7 @@ fn validate_wire_header_fields(msg: &Message, raw: &[u8], errs: &mut ValidationE
                 }
             }
             "tag_store_batch" => {
-                let has_id =
-                    hm.contains_key("event_id") || hm.contains_key("unique_id");
+                let has_id = hm.contains_key("event_id") || hm.contains_key("unique_id");
                 if !has_id {
                     push_err(
                         errs,
@@ -1423,8 +1438,7 @@ fn validate_wire_header_fields(msg: &Message, raw: &[u8], errs: &mut ValidationE
                         "",
                     );
                 }
-                let has_owner =
-                    hm.contains_key("owner") || hm.contains_key("owner_unique_id");
+                let has_owner = hm.contains_key("owner") || hm.contains_key("owner_unique_id");
                 if !has_owner {
                     push_err(
                         errs,
@@ -1468,8 +1482,7 @@ fn validate_wire_header_fields(msg: &Message, raw: &[u8], errs: &mut ValidationE
                 }
             }
             "store_data" => {
-                let has_id =
-                    hm.contains_key("event_id") || hm.contains_key("unique_id");
+                let has_id = hm.contains_key("event_id") || hm.contains_key("unique_id");
                 if !has_id {
                     push_err(
                         errs,
@@ -1483,8 +1496,7 @@ fn validate_wire_header_fields(msg: &Message, raw: &[u8], errs: &mut ValidationE
                         "",
                     );
                 }
-                let has_owner =
-                    hm.contains_key("owner") || hm.contains_key("owner_unique_id");
+                let has_owner = hm.contains_key("owner") || hm.contains_key("owner_unique_id");
                 if !has_owner {
                     push_err(
                         errs,
@@ -1528,8 +1540,7 @@ fn validate_wire_header_fields(msg: &Message, raw: &[u8], errs: &mut ValidationE
                 }
             }
             "get" => {
-                let has_id =
-                    hm.contains_key("event_id") || hm.contains_key("unique_id");
+                let has_id = hm.contains_key("event_id") || hm.contains_key("unique_id");
                 if !has_id {
                     push_err(
                         errs,
@@ -1635,10 +1646,8 @@ fn validate_wire_header_fields(msg: &Message, raw: &[u8], errs: &mut ValidationE
                 }
             }
             "link" => {
-                let has_pair = (hm.contains_key("event_id_a")
-                    && hm.contains_key("event_id_b"))
-                    || (hm.contains_key("unique_id_a")
-                        && hm.contains_key("unique_id_b"));
+                let has_pair = (hm.contains_key("event_id_a") && hm.contains_key("event_id_b"))
+                    || (hm.contains_key("unique_id_a") && hm.contains_key("unique_id_b"));
                 if !has_pair {
                     push_err(
                         errs,
@@ -1653,7 +1662,7 @@ fn validate_wire_header_fields(msg: &Message, raw: &[u8], errs: &mut ValidationE
                     );
                 }
                 for field in &["category", "strength_a", "strength_b"] {
-                    if !hm.contains_key(*field) {
+                    if !hm.contains_key(*field) || hm.get(*field).is_some_and(|v| v.is_empty()) {
                         push_err(
                             errs,
                             "error",
@@ -1667,8 +1676,23 @@ fn validate_wire_header_fields(msg: &Message, raw: &[u8], errs: &mut ValidationE
                         );
                     }
                 }
-                let has_owner = hm.contains_key("owner_event_id")
-                    || hm.contains_key("owner_unique_id");
+                for field in &["strength_a", "strength_b"] {
+                    if let Some(reason) = hm.get(*field).and_then(|v| wire_strength_rejected(v)) {
+                        push_err(
+                            errs,
+                            "error",
+                            "LinkEvent",
+                            field,
+                            field,
+                            "header_value",
+                            &format!("{field} {reason}"),
+                            &format!("Set link.{field} to a finite non-zero strength such as 1.0 or -1.0"),
+                            "",
+                        );
+                    }
+                }
+                let has_owner =
+                    hm.contains_key("owner_event_id") || hm.contains_key("owner_unique_id");
                 if !has_owner {
                     push_err(
                         errs,
@@ -1697,8 +1721,7 @@ fn validate_wire_header_fields(msg: &Message, raw: &[u8], errs: &mut ValidationE
                 }
             }
             "unlink" => {
-                let has_id =
-                    hm.contains_key("event_id") || hm.contains_key("unique_id");
+                let has_id = hm.contains_key("event_id") || hm.contains_key("unique_id");
                 if !has_id {
                     push_err(
                         errs,
@@ -1726,6 +1749,13 @@ fn validate_wire_header_fields(msg: &Message, raw: &[u8], errs: &mut ValidationE
                         "Provide batch links in neural_memory.batch_links",
                         "",
                     );
+                } else {
+                    let payload_start = header_start + header_len;
+                    let payload_end = payload_start.saturating_add(payload_len);
+                    if payload_end <= raw.len() {
+                        let payload = String::from_utf8_lossy(&raw[payload_start..payload_end]);
+                        validate_link_batch_payload(&payload, errs);
+                    }
                 }
             }
             _ => {}
@@ -1749,8 +1779,7 @@ fn validate_wire_header_fields(msg: &Message, raw: &[u8], errs: &mut ValidationE
 
         match db_cmd {
             "get" => {
-                let has_id =
-                    hm.contains_key("_event_id") || hm.contains_key("event_id");
+                let has_id = hm.contains_key("_event_id") || hm.contains_key("event_id");
                 if !has_id {
                     push_err(
                         errs,
@@ -1818,9 +1847,7 @@ fn validate_wire_header_fields(msg: &Message, raw: &[u8], errs: &mut ValidationE
         match msg_type {
             5 => {
                 // GatewayId
-                if !hm.contains_key("id:name")
-                    || hm.get("id:name").map_or(true, |v| v.is_empty())
-                {
+                if !hm.contains_key("id:name") || hm.get("id:name").map_or(true, |v| v.is_empty()) {
                     push_err(
                         errs,
                         "error",
@@ -1836,9 +1863,7 @@ fn validate_wire_header_fields(msg: &Message, raw: &[u8], errs: &mut ValidationE
             }
             2 => {
                 // ActorEcho
-                if !hm.contains_key("_msg_id")
-                    || hm.get("_msg_id").map_or(true, |v| v.is_empty())
-                {
+                if !hm.contains_key("_msg_id") || hm.get("_msg_id").map_or(true, |v| v.is_empty()) {
                     push_err(
                         errs,
                         "error",
@@ -1869,7 +1894,7 @@ fn validate_wire_header_fields(msg: &Message, raw: &[u8], errs: &mut ValidationE
                     );
                 }
             }
-            10 | 9 => {} // GatewayStreamOn/Off: no required fields
+            10 | 9 => {}      // GatewayStreamOn/Off: no required fields
             3 | 30 | 19 => {} // Status/ActorResponse/ActorReport: no required header fields
             _ => {}
         }
@@ -1982,7 +2007,11 @@ fn is_sys_id(s: &str) -> bool {
     s == SYS_SPECIAL_ID
 }
 
-fn validate_apply_to_existing_semantics(errs: &mut ValidationErrors, intent: &str, ev: &crate::message::types::EventFields) {
+fn validate_apply_to_existing_semantics(
+    errs: &mut ValidationErrors,
+    intent: &str,
+    ev: &crate::message::types::EventFields,
+) {
     if is_sys_id(&ev.owner) {
         push_err(
             errs,
@@ -2017,7 +2046,9 @@ fn validate_apply_to_existing_semantics(errs: &mut ValidationErrors, intent: &st
             "Event.UniqueId",
             "unique_id",
             "semantic",
-            &format!("Event.UniqueId must not be $sys for {intent}; $sys is not an individual event."),
+            &format!(
+                "Event.UniqueId must not be $sys for {intent}; $sys is not an individual event."
+            ),
             "Set Event.UniqueId to the UniqueId of the pre-existing target event.",
             "event.unique_id = \"my-event-uid\".into()",
         );
@@ -2064,7 +2095,12 @@ fn validate_lookup_owner_not_used_link(
     }
 }
 
-fn validate_create_event_id_set(errs: &mut ValidationErrors, intent: &str, field: &str, id_value: &str) {
+fn validate_create_event_id_set(
+    errs: &mut ValidationErrors,
+    intent: &str,
+    field: &str,
+    id_value: &str,
+) {
     if id_value.is_empty() {
         return;
     }
@@ -2081,7 +2117,12 @@ fn validate_create_event_id_set(errs: &mut ValidationErrors, intent: &str, field
     );
 }
 
-fn validate_create_link_id_set(errs: &mut ValidationErrors, intent: &str, field: &str, id_value: &str) {
+fn validate_create_link_id_set(
+    errs: &mut ValidationErrors,
+    intent: &str,
+    field: &str,
+    id_value: &str,
+) {
     if id_value.is_empty() {
         return;
     }
@@ -2096,6 +2137,113 @@ fn validate_create_link_id_set(errs: &mut ValidationErrors, intent: &str, field:
         "NeuralMemory.Link.Id is AIP-generated at storage time; set NeuralMemory.Link.UniqueId for a developer-controlled link identifier.",
         "link.unique_id = \"my-link-uid\".into()",
     );
+}
+
+/// `Some(reason)` when a present wire strength is zero, non-finite, or not a number.
+/// An empty value is reported separately as missing.
+fn wire_strength_rejected(value: &str) -> Option<&'static str> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    match value.parse::<f64>() {
+        Ok(n) if !n.is_finite() => {
+            Some("must be a finite non-zero value (positive and negative values are allowed)")
+        }
+        Ok(n) if n == 0.0 => Some("must be non-zero (positive and negative values are allowed)"),
+        Ok(_) => None,
+        Err(_) => Some("must be a finite non-zero number"),
+    }
+}
+
+fn validate_link_batch_payload(payload: &str, errs: &mut ValidationErrors) {
+    let mut saw_record = false;
+    for (i, line) in payload.split('\n').enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        saw_record = true;
+        let mut fields: HashMap<&str, &str> = HashMap::new();
+        for part in line.split('\t') {
+            if let Some((key, value)) = part.split_once('=') {
+                if !key.is_empty() {
+                    fields.insert(key, value);
+                }
+            }
+        }
+        let context = format!("batch link {i}");
+        for field in ["category", "strength_a", "strength_b"] {
+            let missing = match fields.get(field) {
+                Some(value) => value.is_empty(),
+                None => true,
+            };
+            if missing {
+                push_err(
+                    errs,
+                    "error",
+                    "StoreBatchLinks",
+                    field,
+                    field,
+                    "payload_format",
+                    &format!("{field} required in {context}"),
+                    &format!("Set link.{field} on batch link {i}"),
+                    "",
+                );
+            }
+        }
+        for field in ["strength_a", "strength_b"] {
+            if let Some(reason) = fields.get(field).and_then(|v| wire_strength_rejected(v)) {
+                push_err(
+                    errs,
+                    "error",
+                    "StoreBatchLinks",
+                    field,
+                    field,
+                    "payload_format",
+                    &format!("{field} {reason} in {context}"),
+                    &format!("Set link.{field} to a finite non-zero strength such as 1.0 or -1.0"),
+                    "",
+                );
+            }
+        }
+    }
+    if !saw_record {
+        push_err(
+            errs,
+            "error",
+            "StoreBatchLinks",
+            "payload",
+            "payload",
+            "required",
+            "Payload is required for link_batch",
+            "Provide batch links in neural_memory.batch_links",
+            "",
+        );
+    }
+}
+
+fn require_nonzero_strength(
+    errs: &mut ValidationErrors,
+    intent: &str,
+    field: &str,
+    wire: &str,
+    value: f64,
+) {
+    if value == 0.0 || !value.is_finite() {
+        push_err(
+            errs,
+            "error",
+            intent,
+            field,
+            wire,
+            "required",
+            &format!(
+                "{wire} must be a finite non-zero value (positive and negative values are allowed)"
+            ),
+            &format!("Set {field} to a finite non-zero strength such as 1.0 or -1.0"),
+            "",
+        );
+    }
 }
 
 fn required_field(
@@ -2150,7 +2298,9 @@ fn push_err(
 mod semantic_tests {
     use super::*;
     use crate::message::intents;
-    use crate::message::types::{Envelope, EventFields, Message, NeuralMemoryFields, Tag, TagValue};
+    use crate::message::types::{
+        Envelope, EventFields, Message, NeuralMemoryFields, Tag, TagValue,
+    };
 
     fn envelope_msg(intent: intents::Intent) -> Message {
         Message {
@@ -2170,6 +2320,64 @@ mod semantic_tests {
 
     fn has_error(errs: &ValidationErrors) -> bool {
         errs.iter().any(|e| e.severity == "error")
+    }
+
+    fn mem_frame(header: &str, payload: &str) -> Vec<u8> {
+        let to = b"actor@gateway.local";
+        let from = b"client@gateway.local";
+        let header = header.as_bytes();
+        let payload = payload.as_bytes();
+        let total = 63 + to.len() + from.len() + header.len() + payload.len();
+        let mut buf = Vec::new();
+        let hex = |buf: &mut Vec<u8>, n: usize| buf.extend(format!("x{n:08x}").into_bytes());
+        hex(&mut buf, total);
+        hex(&mut buf, to.len());
+        hex(&mut buf, from.len());
+        hex(&mut buf, header.len());
+        buf.extend(format!("{:09}", 1000u64).into_bytes());
+        buf.extend(format!("{:09}", 0u64).into_bytes());
+        hex(&mut buf, payload.len());
+        buf.extend(to);
+        buf.extend(from);
+        buf.extend(header);
+        buf.extend(payload);
+        buf
+    }
+
+    #[test]
+    fn link_batch_payload_requires_finite_strength_and_category() {
+        std::env::set_var("PODOS_VALIDATE", "1");
+        let ok = validate_raw_message(&mem_frame(
+            "_db_cmd=link_batch",
+            "strength_a=-1.5\tstrength_b=0.25\tcategory=related",
+        ));
+        assert!(
+            !ok.iter()
+                .any(|e| e.wire_field == "strength_a" || e.wire_field == "category"),
+            "{ok:?}"
+        );
+
+        let missing = validate_raw_message(&mem_frame(
+            "_db_cmd=link_batch",
+            "event_id_a=a\tevent_id_b=b\tcategory=related",
+        ));
+        assert!(missing.iter().any(|e| e.wire_field == "strength_a"));
+        assert!(missing.iter().any(|e| e.wire_field == "strength_b"));
+
+        let zero = validate_raw_message(&mem_frame(
+            "_db_cmd=link_batch",
+            "strength_a=0\tstrength_b=1\tcategory=related",
+        ));
+        assert!(zero
+            .iter()
+            .any(|e| e.wire_field == "strength_a" && e.rule == "payload_format"));
+
+        let nan = validate_raw_message(&mem_frame(
+            "_db_cmd=link_batch",
+            "strength_a=NaN\tstrength_b=inf\tcategory=related",
+        ));
+        assert!(nan.iter().any(|e| e.wire_field == "strength_a"));
+        assert!(nan.iter().any(|e| e.wire_field == "strength_b"));
     }
 
     #[test]

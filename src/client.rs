@@ -120,7 +120,10 @@ pub async fn remove_client_by_gateway_actor_name(actor_name: &str) {
 
 async fn register_client(client: Arc<Client>) -> Result<(), GatewayDError> {
     let key = client.key.clone();
-    CLIENT_REGISTRY.write().await.insert(key.clone(), client.clone());
+    CLIENT_REGISTRY
+        .write()
+        .await
+        .insert(key.clone(), client.clone());
     ACTOR_REGISTRY.write().await.insert(key, client);
     Ok(())
 }
@@ -218,7 +221,8 @@ pub struct Client {
     reconnect_notify: Notify,
 
     // Connection state observer
-    state_handler: StdMutex<Option<Box<dyn Fn(ConnectionState, Option<&GatewayDError>) + Send + Sync>>>,
+    state_handler:
+        StdMutex<Option<Box<dyn Fn(ConnectionState, Option<&GatewayDError>) + Send + Sync>>>,
 
     logger: Arc<dyn Logger>,
 }
@@ -328,20 +332,21 @@ impl Client {
                 let port = port.clone();
                 Box::pin(async move {
                     let addr = format!("{host}:{port}");
-                    let stream = tokio::time::timeout(dial_timeout, tokio::net::TcpStream::connect(&addr))
-                        .await
-                        .map_err(|_| {
-                            GatewayDError::new(
-                                ErrCode::PoolInitializationFailed,
-                                format!("pool dial timeout: {addr}"),
-                            )
-                        })?
-                        .map_err(|e| {
-                            GatewayDError::new(
-                                ErrCode::PoolInitializationFailed,
-                                format!("pool dial failed: {e}"),
-                            )
-                        })?;
+                    let stream =
+                        tokio::time::timeout(dial_timeout, tokio::net::TcpStream::connect(&addr))
+                            .await
+                            .map_err(|_| {
+                                GatewayDError::new(
+                                    ErrCode::PoolInitializationFailed,
+                                    format!("pool dial timeout: {addr}"),
+                                )
+                            })?
+                            .map_err(|e| {
+                                GatewayDError::new(
+                                    ErrCode::PoolInitializationFailed,
+                                    format!("pool dial failed: {e}"),
+                                )
+                            })?;
                     Ok(ConnectionData::new(stream))
                 })
             });
@@ -844,10 +849,7 @@ impl Client {
             Ok(Ok(resp)) if resp.processing_status() != "ERROR" => Ok(()),
             Ok(Ok(resp)) => Err(GatewayDError::new(
                 ErrCode::GatewayDisconnected,
-                format!(
-                    "liveness probe rejected: {}",
-                    resp.processing_message()
-                ),
+                format!("liveness probe rejected: {}", resp.processing_message()),
             )),
             Ok(Err(e)) => Err(e),
             Err(_) => Err(GatewayDError::new(
@@ -949,10 +951,7 @@ impl Client {
 
     async fn send_sync(&self, msg: &Message) -> Result<Message, GatewayDError> {
         match self.do_send_sync(msg).await {
-            Err(ref e)
-                if self.cfg.reconnect_config.is_enabled()
-                    && e.is_connection_lost() =>
-            {
+            Err(ref e) if self.cfg.reconnect_config.is_enabled() && e.is_connection_lost() => {
                 self.logger.info(
                     "sync send failed with connection error, attempting reconnection",
                     &[("error", &e.message)],
@@ -981,10 +980,7 @@ impl Client {
 
     async fn send_sync_with_raw(&self, msg: &Message) -> Result<(Message, Vec<u8>), GatewayDError> {
         match self.do_send_sync_with_raw(msg).await {
-            Err(ref e)
-                if self.cfg.reconnect_config.is_enabled()
-                    && e.is_connection_lost() =>
-            {
+            Err(ref e) if self.cfg.reconnect_config.is_enabled() && e.is_connection_lost() => {
                 self.logger.info(
                     "sync send (raw) failed with connection error, attempting reconnection",
                     &[("error", &e.message)],
@@ -1002,7 +998,10 @@ impl Client {
         }
     }
 
-    async fn do_send_sync_with_raw(&self, msg: &Message) -> Result<(Message, Vec<u8>), GatewayDError> {
+    async fn do_send_sync_with_raw(
+        &self,
+        msg: &Message,
+    ) -> Result<(Message, Vec<u8>), GatewayDError> {
         let encoded = encode_message(msg, "")
             .map_err(|e| GatewayDError::new(ErrCode::ClientSendFailed, format!("encode: {e}")))?;
         self.conn.send(encoded.as_bytes()).await?;
@@ -1056,7 +1055,10 @@ impl Client {
             .map_err(|_| {
                 GatewayDError::new(
                     ErrCode::GatewayTimeout,
-                    format!("response timeout{}", GatewayDError::REPLY_ROUTING_TIMEOUT_HINT),
+                    format!(
+                        "response timeout{}",
+                        GatewayDError::REPLY_ROUTING_TIMEOUT_HINT
+                    ),
                 )
             })?
             .map_err(|_| {
@@ -1117,7 +1119,10 @@ impl Client {
             .map_err(|_| {
                 GatewayDError::new(
                     ErrCode::GatewayTimeout,
-                    format!("response timeout{}", GatewayDError::REPLY_ROUTING_TIMEOUT_HINT),
+                    format!(
+                        "response timeout{}",
+                        GatewayDError::REPLY_ROUTING_TIMEOUT_HINT
+                    ),
                 )
             })?
             .map_err(|_| {
@@ -1231,8 +1236,8 @@ impl Client {
             }
         }
 
-        let is_mem_reply = arc_msg.envelope.intent.message_type
-            == intents::STORE_EVENT_RESPONSE.message_type;
+        let is_mem_reply =
+            arc_msg.envelope.intent.message_type == intents::STORE_EVENT_RESPONSE.message_type;
         if is_mem_reply || msg_id.is_empty() {
             let unique_id = arc_msg
                 .event
@@ -1575,10 +1580,7 @@ mod disconnect_tests {
     use tokio::net::TcpListener;
 
     fn test_client(conn: Arc<ConnClient>, cfg: Config) -> Arc<Client> {
-        let logger: Arc<dyn Logger> = cfg
-            .logger
-            .clone()
-            .unwrap_or_else(|| Arc::new(NoOpLogger));
+        let logger: Arc<dyn Logger> = cfg.logger.clone().unwrap_or_else(|| Arc::new(NoOpLogger));
         let gateway_actor_name = cfg.gateway_actor_name.clone();
         let client_name = cfg.client_name.clone();
         let (incoming_tx, _) = broadcast::channel(INCOMING_CHANNEL_CAPACITY);

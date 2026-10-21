@@ -264,7 +264,10 @@ impl Config {
 #[cfg(test)]
 mod keepalive_tests {
     use super::*;
-    use crate::message::{encode_message, intents, types::{Envelope, Message}};
+    use crate::message::{
+        encode_message, intents,
+        types::{Envelope, Message},
+    };
 
     #[test]
     fn config_default_keepalive_interval() {

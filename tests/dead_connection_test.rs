@@ -37,7 +37,10 @@ async fn corrupt_prefix_is_fatal() {
 
     let client = connect_to(&addr.ip().to_string(), &addr.port().to_string()).await;
     let err = client.receive().await.expect_err("expected error");
-    assert!(err.is_connection_lost(), "expected connection lost, got {err:?}");
+    assert!(
+        err.is_connection_lost(),
+        "expected connection lost, got {err:?}"
+    );
     assert!(!client.is_connected(), "connected flag should be cleared");
 }
 
@@ -58,9 +61,15 @@ async fn rst_mid_response_is_fatal() {
     let client = connect_to(&addr.ip().to_string(), &addr.port().to_string()).await;
     let start = std::time::Instant::now();
     let err = client.receive().await.expect_err("expected error");
-    assert!(err.is_connection_lost(), "expected connection lost, got {err:?}");
+    assert!(
+        err.is_connection_lost(),
+        "expected connection lost, got {err:?}"
+    );
     assert!(!client.is_connected(), "connected flag should be cleared");
-    assert!(start.elapsed() < Duration::from_millis(1500), "detection too slow");
+    assert!(
+        start.elapsed() < Duration::from_millis(1500),
+        "detection too slow"
+    );
 }
 
 #[tokio::test]
@@ -78,5 +87,8 @@ async fn idle_timeout_is_benign() {
     let client = connect_to(&addr.ip().to_string(), &addr.port().to_string()).await;
     let err = client.receive().await.expect_err("expected timeout");
     assert!(err.is_idle_timeout(), "expected idle timeout, got {err:?}");
-    assert!(client.is_connected(), "connected flag must stay set on idle timeout");
+    assert!(
+        client.is_connected(),
+        "connected flag must stay set on idle timeout"
+    );
 }

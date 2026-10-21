@@ -7,8 +7,8 @@ use crate::message::{
     errors::{DecodeError, MsgErrCode},
     intents, tag_format,
     types::{
-        BriefHitRecord, Envelope, EventFields, LinkFields, Linked, Message, PayloadData, PayloadFields,
-        ResponseFields, StoreBatchEventRecord, StoreLinkBatchEventRecord, TagOutput,
+        BriefHitRecord, Envelope, EventFields, LinkFields, Linked, Message, PayloadData,
+        PayloadFields, ResponseFields, StoreBatchEventRecord, StoreLinkBatchEventRecord, TagOutput,
     },
 };
 use std::collections::HashMap;
@@ -139,11 +139,9 @@ pub fn decode_message(raw: &[u8]) -> Result<Message, DecodeError> {
         parse_get_events_for_tags_payload(&mut msg, &payload_str);
         // BufferResults=N: ENM inlines event/link records in the header tab stream
         // (payload is often empty). The payload parser only handles newline records.
-        if msg
-            .response
-            .as_ref()
-            .map_or(true, |r| r.event_records.is_empty() && r.brief_hits.is_empty())
-        {
+        if msg.response.as_ref().map_or(true, |r| {
+            r.event_records.is_empty() && r.brief_hits.is_empty()
+        }) {
             parse_get_events_for_tags_inline_header(&mut msg, &header_str);
         }
     } else if intent == STORE_BATCH_EVENTS || intent == STORE_BATCH_EVENTS_RESPONSE {
@@ -215,7 +213,11 @@ pub fn header_map_from_raw(raw: &[u8]) -> Result<HashMap<String, String>, Decode
     if raw.len() < MIN_MSG_SIZE {
         return Err(DecodeError::new(
             MsgErrCode::DecodeMessageTooShort,
-            format!("message too short: {} bytes (minimum {})", raw.len(), MIN_MSG_SIZE),
+            format!(
+                "message too short: {} bytes (minimum {})",
+                raw.len(),
+                MIN_MSG_SIZE
+            ),
         ));
     }
 
@@ -444,7 +446,8 @@ fn parse_event_id_line(line: &str) -> EventFields {
         }
     }
     if fields.contains_key("_event_tag") {
-        e.tags.push(tag_format::parse_event_tag_payload_fields(&fields));
+        e.tags
+            .push(tag_format::parse_event_tag_payload_fields(&fields));
     }
     if let Some(uid) = tag_format::unique_id_from_tags(&e.tags) {
         e.unique_id = uid.to_string();
@@ -652,15 +655,9 @@ fn parse_gft_linked(s: &str) -> Linked {
         id: linked_id_from_rest(s, &fields),
         unique_id: fields.get("unique_id").cloned().unwrap_or_default(),
         source_id: fields.get("source").cloned().unwrap_or_default(),
-        source_unique_id: fields
-            .get("source_unique_id")
-            .cloned()
-            .unwrap_or_default(),
+        source_unique_id: fields.get("source_unique_id").cloned().unwrap_or_default(),
         target_id: fields.get("target").cloned().unwrap_or_default(),
-        target_unique_id: fields
-            .get("target_unique_id")
-            .cloned()
-            .unwrap_or_default(),
+        target_unique_id: fields.get("target_unique_id").cloned().unwrap_or_default(),
         strength: fields
             .get("strength")
             .and_then(|v| v.parse().ok())
@@ -681,10 +678,7 @@ fn parse_get_event_linked(
         id: linked_id_from_rest(s, &fields),
         unique_id: fields.get("unique_id").cloned().unwrap_or_default(),
         target_id: fields.get("target_event").cloned().unwrap_or_default(),
-        target_unique_id: fields
-            .get("target_unique_id")
-            .cloned()
-            .unwrap_or_default(),
+        target_unique_id: fields.get("target_unique_id").cloned().unwrap_or_default(),
         strength: fields
             .get("strength")
             .and_then(|v| v.parse().ok())
@@ -770,11 +764,7 @@ fn parse_get_event_response(msg: &mut Message, hm: &HashMap<String, String>, pay
             continue;
         }
         if let Some(rest) = line.strip_prefix("_link=") {
-            links.push(parse_get_event_linked(
-                rest,
-                hm,
-                request_snapshot.as_ref(),
-            ));
+            links.push(parse_get_event_linked(rest, hm, request_snapshot.as_ref()));
         } else if line.starts_with("_linktag") {
             if let Some((link_id, tag)) = parse_get_event_kv_tag_line(line, "event_id") {
                 link_tags.entry(link_id).or_default().push(tag);
@@ -1049,7 +1039,8 @@ mod tests {
 
     #[test]
     fn get_events_for_tags_inline_header_buffer_results_n() {
-        let header = "_command=events_for_tag\t_type=events_for_tag\t_status=ok\t_total_event_hits=1\t\
+        let header =
+            "_command=events_for_tag\t_type=events_for_tag\t_status=ok\t_total_event_hits=1\t\
                       _returned_event_hits=1\t_msg_id=test-msg-id\t\
                       _event_id=+1779546961.870109\t_hits=1\t\
                       tag:1:kind=session\ttag:1:status=active\ttag:1:created_by=default\t\
@@ -1069,9 +1060,15 @@ mod tests {
         assert_eq!(resp.event_records.len(), 1);
         let event = &resp.event_records[0];
         assert_eq!(event.id, "+1779546961.870109");
-        assert_eq!(event.unique_id, "session-fa851eb8-2e64-41f2-bc64-1dc05df2cbc9");
+        assert_eq!(
+            event.unique_id,
+            "session-fa851eb8-2e64-41f2-bc64-1dc05df2cbc9"
+        );
         assert_eq!(event.hits, 1);
-        assert!(event.tags.iter().any(|t| t.key == "kind" && t.value == "session"));
+        assert!(event
+            .tags
+            .iter()
+            .any(|t| t.key == "kind" && t.value == "session"));
         assert!(event
             .tags
             .iter()
@@ -1097,11 +1094,19 @@ mod tests {
         assert_eq!(event.unique_id, "uid-1");
         assert_eq!(event.tags.len(), 2);
         assert_eq!(
-            (event.tags[0].key.as_str(), event.tags[0].frequency, event.tags[0].timestamp.as_str(), event.tags[0].owner.as_str()),
+            (
+                event.tags[0].key.as_str(),
+                event.tags[0].frequency,
+                event.tags[0].timestamp.as_str(),
+                event.tags[0].owner.as_str()
+            ),
             ("color", 2, "1.000001", "O1")
         );
         assert_eq!(event.tags[1].owner, "");
-        assert!(event.owner.is_empty(), "tag owner must not leak into event owner");
+        assert!(
+            event.owner.is_empty(),
+            "tag owner must not leak into event owner"
+        );
     }
 
     fn wire_frame(header: &str, payload: &str, msg_type: i32) -> Vec<u8> {
@@ -1186,8 +1191,11 @@ mod tests {
 
         let event = decoded.event.unwrap();
         assert_eq!(event.links.len(), 2);
-        let by_uid: HashMap<&str, &Linked> =
-            event.links.iter().map(|lk| (lk.unique_id.as_str(), lk)).collect();
+        let by_uid: HashMap<&str, &Linked> = event
+            .links
+            .iter()
+            .map(|lk| (lk.unique_id.as_str(), lk))
+            .collect();
         let out = by_uid["lk_a_to_x"];
         let inbound = by_uid["lk_b_to_a"];
         assert_eq!(
@@ -1246,7 +1254,10 @@ mod tests {
 
         let decoded = decode_message(&buf).expect("decode should succeed");
 
-        let resp = decoded.response.as_ref().expect("response should be present");
+        let resp = decoded
+            .response
+            .as_ref()
+            .expect("response should be present");
         assert_eq!(resp.returned_events, 1);
         assert_eq!(resp.total_events, 1);
         assert_eq!(
@@ -1258,6 +1269,9 @@ mod tests {
         let event = &resp.event_records[0];
         assert_eq!(event.id, "+1779915728.313839");
         assert_eq!(event.unique_id, "session-fa851eb8");
-        assert!(event.tags.iter().any(|t| t.key == "kind" && t.value == "session"));
+        assert!(event
+            .tags
+            .iter()
+            .any(|t| t.key == "kind" && t.value == "session"));
     }
 }

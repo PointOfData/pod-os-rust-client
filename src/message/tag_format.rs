@@ -29,7 +29,9 @@ pub(crate) fn parse_event_tag_header(name: &str, value: &str) -> Option<TagOutpu
         tag_number: parts[0].parse().unwrap_or(0),
         frequency: parts[1].parse().unwrap_or(1),
         timestamp: parts.get(2).map_or_else(String::new, |s| s.to_string()),
-        owner: parts.get(3).map_or_else(String::new, |s| normalize_tag_owner(s)),
+        owner: parts
+            .get(3)
+            .map_or_else(String::new, |s| normalize_tag_owner(s)),
         key,
         value,
         ..Default::default()
@@ -193,7 +195,12 @@ mod tests {
     #[test]
     fn parse_event_tag_header_formats() {
         let cases = [
-            ("format 0", "event_tag:000000017:4", "k=v", tag(17, 4, "", "", "k", "v")),
+            (
+                "format 0",
+                "event_tag:000000017:4",
+                "k=v",
+                tag(17, 4, "", "", "k", "v"),
+            ),
             (
                 "format 1 without owner",
                 "event_tag:000000002:3:1790266974.325930",
@@ -266,10 +273,19 @@ mod tests {
     #[test]
     fn parse_posix_timestamp_values() {
         let at = |s, us| Some(UNIX_EPOCH + Duration::from_secs(s) + Duration::from_micros(us));
-        assert_eq!(parse_posix_timestamp("1790266974.325930"), at(1_790_266_974, 325_930));
-        assert_eq!(parse_posix_timestamp("+1790266974.5"), at(1_790_266_974, 500_000));
+        assert_eq!(
+            parse_posix_timestamp("1790266974.325930"),
+            at(1_790_266_974, 325_930)
+        );
+        assert_eq!(
+            parse_posix_timestamp("+1790266974.5"),
+            at(1_790_266_974, 500_000)
+        );
         assert_eq!(parse_posix_timestamp("1790266974"), at(1_790_266_974, 0));
-        assert_eq!(parse_posix_timestamp("1790266974.1234567"), at(1_790_266_974, 123_456));
+        assert_eq!(
+            parse_posix_timestamp("1790266974.1234567"),
+            at(1_790_266_974, 123_456)
+        );
         assert_eq!(
             parse_posix_timestamp("-1.5"),
             UNIX_EPOCH.checked_sub(Duration::from_micros(1_500_000))

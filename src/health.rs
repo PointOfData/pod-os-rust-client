@@ -10,18 +10,13 @@ use uuid::Uuid;
 
 use crate::client::Client;
 use crate::message::{
-    encode_message,
-    intents,
+    encode_message, intents,
     types::{Envelope, Message, ResponseFields},
 };
 
 /// Constructs a [`intents::STATUS`] response for an inbound [`intents::STATUS_REQUEST`] probe.
 pub fn build_status_health_reply(client: &Client, inbound: &Message) -> Message {
-    build_status_health_reply_for(
-        client.client_name(),
-        client.actor_name(),
-        inbound,
-    )
+    build_status_health_reply_for(client.client_name(), client.actor_name(), inbound)
 }
 
 /// Spawns a background task that replies to inbound `StatusRequest` probes.

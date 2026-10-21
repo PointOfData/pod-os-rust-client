@@ -122,8 +122,10 @@ impl GatewayDError {
     /// must be reconnected). True for the explicit `ConnectionLost`/
     /// `GatewayDisconnected` codes or any wrapped connection-class I/O error.
     pub fn is_connection_lost(&self) -> bool {
-        matches!(self.code, ErrCode::ConnectionLost | ErrCode::GatewayDisconnected)
-            || self.is_io_connection_error()
+        matches!(
+            self.code,
+            ErrCode::ConnectionLost | ErrCode::GatewayDisconnected
+        ) || self.is_io_connection_error()
     }
 
     /// Whether this is a benign idle receive timeout (connection still healthy).

@@ -143,11 +143,7 @@ async fn spawn_mock() -> (String, String, Arc<MockGateway>) {
         }
     });
 
-    (
-        addr.ip().to_string(),
-        addr.port().to_string(),
-        gateway,
-    )
+    (addr.ip().to_string(), addr.port().to_string(), gateway)
 }
 
 #[tokio::test]
@@ -178,7 +174,10 @@ async fn long_pending_rpc_does_not_reconnect_when_probes_succeed() {
     // Longer than the old 90s backstop would need; with probes we should stay connected.
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-    assert!(client.is_connected(), "expected socket to remain up during long RPC");
+    assert!(
+        client.is_connected(),
+        "expected socket to remain up during long RPC"
+    );
     assert_eq!(
         gateway.gateway_id_count.load(Ordering::SeqCst),
         1,
@@ -233,7 +232,10 @@ async fn client_new_during_reconnect_waits_for_existing() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 
-    assert!(client.is_reconnecting(), "expected reconnect to be in progress");
+    assert!(
+        client.is_reconnecting(),
+        "expected reconnect to be in progress"
+    );
 
     let second = Client::new(race_test_config(
         &addr.ip().to_string(),
@@ -302,7 +304,11 @@ async fn reconnect_sends_disconnect_before_second_gateway_id() {
         }
     });
 
-    let mut cfg = test_config(&addr.ip().to_string(), &addr.port().to_string(), "disc-client");
+    let mut cfg = test_config(
+        &addr.ip().to_string(),
+        &addr.port().to_string(),
+        "disc-client",
+    );
     cfg.liveness_probe_max_failures = Some(2);
     cfg.liveness_probe_interval = Some(std::time::Duration::from_millis(100));
     cfg.reconnect_config.initial_backoff = std::time::Duration::from_millis(50);

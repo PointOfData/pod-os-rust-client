@@ -19,10 +19,7 @@ pub fn resolve(network: &str, address: &str) -> Result<String, GatewayDError> {
     } else {
         Err(GatewayDError::new(
             ErrCode::InvalidNetwork,
-            format!(
-                "unsupported network '{}' — expected tcp/udp/unix",
-                network
-            ),
+            format!("unsupported network '{}' — expected tcp/udp/unix", network),
         ))
     }
 }

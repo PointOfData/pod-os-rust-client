@@ -5,7 +5,9 @@ use uuid::Uuid;
 use crate::errors::GatewayDError;
 use crate::message::{
     intents,
-    types::{Envelope, GetEventsForTagsOptions, Message, NeuralMemoryFields, PayloadData, PayloadFields},
+    types::{
+        Envelope, GetEventsForTagsOptions, Message, NeuralMemoryFields, PayloadData, PayloadFields,
+    },
 };
 
 /// Reports whether an actor type runs pod_aip_db and can answer Neural-Memory intents
@@ -69,14 +71,12 @@ pub fn build_actor_health_probe_message(
 }
 
 /// Reports whether a health probe transport and AIP status indicate success.
-pub fn actor_health_probe_succeeded(
-    err: Option<&GatewayDError>,
-    resp: Option<&Message>,
-) -> bool {
+pub fn actor_health_probe_succeeded(err: Option<&GatewayDError>, resp: Option<&Message>) -> bool {
     if err.is_some() {
         return false;
     }
-    resp.map(|m| m.processing_status() != "ERROR").unwrap_or(true)
+    resp.map(|m| m.processing_status() != "ERROR")
+        .unwrap_or(true)
 }
 
 #[cfg(test)]
@@ -108,7 +108,10 @@ mod tests {
             "client",
             "socket",
         );
-        assert_eq!(socket_msg.envelope.intent.name, intents::STATUS_REQUEST.name);
+        assert_eq!(
+            socket_msg.envelope.intent.name,
+            intents::STATUS_REQUEST.name
+        );
         assert!(!socket_msg.envelope.message_id.is_empty());
 
         let nm_msg = build_actor_health_probe_message(
@@ -132,7 +135,10 @@ mod tests {
     #[test]
     fn probe_succeeded() {
         assert!(actor_health_probe_succeeded(None, None));
-        assert!(actor_health_probe_succeeded(None, Some(&Message::default())));
+        assert!(actor_health_probe_succeeded(
+            None,
+            Some(&Message::default())
+        ));
         let err_resp = Message {
             response: Some(ResponseFields {
                 status: "ERROR".into(),

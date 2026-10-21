@@ -53,8 +53,15 @@ fn decode_get_event_tag_format_0() {
     let tags = &msg.event.as_ref().unwrap().tags;
     assert_eq!(tags.len(), 36);
     for (i, tag) in tags.iter().enumerate() {
-        assert_eq!(tag.tag_number, i as i64 + 1, "tags must be ordered by tag number");
-        assert!(tag.timestamp.is_empty() && tag.owner.is_empty(), "tag {i}: {tag:?}");
+        assert_eq!(
+            tag.tag_number,
+            i as i64 + 1,
+            "tags must be ordered by tag number"
+        );
+        assert!(
+            tag.timestamp.is_empty() && tag.owner.is_empty(),
+            "tag {i}: {tag:?}"
+        );
     }
     let color = find_tags(tags, "color", "red");
     assert_eq!(color.len(), 1);
@@ -103,7 +110,11 @@ fn decode_get_events_for_tags_buffer_format_0() {
     let msg = decode(fixture!("events_for_tag_buffer_format_0"));
     assert_eq!(msg.search_event_records().len(), 2);
     let target = event_by_key(&msg, TARGET_KEY);
-    assert_eq!(target.tags.len(), 21, "duplicate tag:5:size fields must both survive");
+    assert_eq!(
+        target.tags.len(),
+        21,
+        "duplicate tag:5:size fields must both survive"
+    );
     assert_eq!(target.unique_id, TARGET_UID);
     assert_eq!(find_tags(&target.tags, "size", "a:b=c").len(), 2);
     assert!(target.tags.iter().all(|t| t.timestamp.is_empty()));
@@ -140,7 +151,10 @@ fn decode_get_events_for_tags_buffer_format_1_owner_event_key() {
 
     let color = find_tags(&target.tags, "color", "red");
     assert_eq!(color.len(), 1);
-    assert_eq!(color[0].owner, "", "$sys-owned tag owner must be normalized to empty");
+    assert_eq!(
+        color[0].owner, "",
+        "$sys-owned tag owner must be normalized to empty"
+    );
 
     let size = find_tags(&target.tags, "size", "a:b=c");
     assert_eq!(size.len(), 2);
@@ -190,7 +204,10 @@ fn decode_get_events_for_tags_buffer_format_1_owner_unique_id() {
 
     let color = find_tags(&target.tags, "color", "red");
     assert_eq!(color.len(), 1);
-    assert_eq!((color[0].owner.as_str(), color[0].owner_unique_id.as_str()), ("", ""));
+    assert_eq!(
+        (color[0].owner.as_str(), color[0].owner_unique_id.as_str()),
+        ("", "")
+    );
 
     let size = find_tags(&target.tags, "size", "a:b=c");
     assert_eq!(size.len(), 2);
@@ -293,7 +310,10 @@ fn apply_tag_owner_output_get_event_unique_id() {
         &resp.event.as_ref().unwrap().tags[0],
         &resp.search_event_records()[0].tags[0],
     ] {
-        assert_eq!((t.owner.as_str(), t.owner_unique_id.as_str()), ("", OWNER_UID));
+        assert_eq!(
+            (t.owner.as_str(), t.owner_unique_id.as_str()),
+            ("", OWNER_UID)
+        );
     }
 }
 
@@ -389,7 +409,10 @@ fn get_event_header_tag_format() {
         get_tags: true,
         ..Default::default()
     }));
-    assert!(has_field(&h, "tag_format=0") && !h.contains("output_tag_owner"), "{h:?}");
+    assert!(
+        has_field(&h, "tag_format=0") && !h.contains("output_tag_owner"),
+        "{h:?}"
+    );
 
     let h = header_of(&get_event_msg(GetEventOptions {
         get_tags: true,
@@ -421,7 +444,10 @@ fn get_events_for_tags_header_tag_owner() {
         ..Default::default()
     };
     let h = header_of(&events_for_tags_msg(bf1(TagOwnerOutput::None)));
-    assert!(has_field(&h, "buffer_format=1") && !h.contains("get_tag_owner"), "{h:?}");
+    assert!(
+        has_field(&h, "buffer_format=1") && !h.contains("get_tag_owner"),
+        "{h:?}"
+    );
 
     let h = header_of(&events_for_tags_msg(bf1(TagOwnerOutput::EventKey)));
     assert!(has_field(&h, "get_tag_owner=Y"), "{h:?}");
@@ -468,7 +494,10 @@ fn validate_tag_format_struct() {
         assert!(errs.is_empty(), "unexpected validation errors: {errs:#?}");
         let sm = encode_message(msg, "").expect("encode");
         let raw = validate_raw_message(sm.as_bytes());
-        assert!(raw.is_empty(), "unexpected wire validation errors: {raw:#?}");
+        assert!(
+            raw.is_empty(),
+            "unexpected wire validation errors: {raw:#?}"
+        );
     }
 
     let cases: Vec<(&str, Message, &str, &str, &str, &str)> = vec![
@@ -534,8 +563,15 @@ fn validate_tag_format_struct() {
         let errs = msg.validate();
         let e = find_err(&errs, field, severity)
             .unwrap_or_else(|| panic!("{name}: want {severity} on {field}, got {errs:#?}"));
-        assert_eq!((e.wire_field.as_str(), e.rule.as_str()), (wire, rule), "{name}");
-        assert!(!e.fix.is_empty() && !e.example_code.is_empty(), "{name}: {e:?}");
+        assert_eq!(
+            (e.wire_field.as_str(), e.rule.as_str()),
+            (wire, rule),
+            "{name}"
+        );
+        assert!(
+            !e.fix.is_empty() && !e.example_code.is_empty(),
+            "{name}: {e:?}"
+        );
     }
 }
 

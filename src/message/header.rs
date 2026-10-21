@@ -3,67 +3,123 @@
 //! The header is a tab-separated sequence of `key=value` pairs.
 
 use crate::message::{
+    errors::{EncodeError, MsgErrCode},
     intents::{self, Intent},
-    types::{Message, TagOwnerOutput},
+    types::{LinkFields, Message, TagOwnerOutput},
 };
+
+/// `strength_a`, `strength_b`, and `category` are required on every stored link.
+/// A missing field, or a strength of 0, is dropped by the actor and the link is
+/// never written. Positive and negative non-zero strengths are valid.
+pub(crate) fn require_link_wire_fields(
+    link: Option<&LinkFields>,
+    context: &str,
+) -> Result<(), EncodeError> {
+    let Some(link) = link else {
+        return Err(EncodeError::new(
+            MsgErrCode::EncodeInvalidData,
+            format!(
+                "{context}: link is missing; strength_a, strength_b, and category are required"
+            ),
+        )
+        .with_field("link"));
+    };
+    if let Err(message) = reject_strength(link.strength_a) {
+        return Err(EncodeError::new(
+            MsgErrCode::EncodeInvalidData,
+            format!("{context}: strength_a {message}"),
+        )
+        .with_field("strength_a"));
+    }
+    if let Err(message) = reject_strength(link.strength_b) {
+        return Err(EncodeError::new(
+            MsgErrCode::EncodeInvalidData,
+            format!("{context}: strength_b {message}"),
+        )
+        .with_field("strength_b"));
+    }
+    if link.category.is_empty() {
+        return Err(EncodeError::new(
+            MsgErrCode::EncodeInvalidData,
+            format!("{context}: category is required"),
+        )
+        .with_field("category"));
+    }
+    Ok(())
+}
+
+/// Zero, NaN, and infinity are not stored. Positive and negative finite values are.
+fn reject_strength(value: f64) -> Result<(), &'static str> {
+    if !value.is_finite() {
+        Err("must be a finite non-zero value (positive and negative values are allowed)")
+    } else if value == 0.0 {
+        Err("must be non-zero (positive and negative values are allowed)")
+    } else {
+        Ok(())
+    }
+}
 
 /// Build the full header string for a message.
 ///
 /// `connection_id_uuid` is the per-connection identifier sent by the gateway.
-pub fn construct_header(msg: &Message, intent: &Intent, _connection_id_uuid: &str) -> String {
+pub fn construct_header(
+    msg: &Message,
+    intent: &Intent,
+    _connection_id_uuid: &str,
+) -> Result<String, EncodeError> {
     use intents::*;
 
     if *intent == GATEWAY_ID {
-        return gateway_identify_connection_header(msg);
+        return Ok(gateway_identify_connection_header(msg));
     }
     if *intent == GATEWAY_STREAM_ON {
-        return gateway_stream_on_header(msg);
+        return Ok(gateway_stream_on_header(msg));
     }
     if *intent == GATEWAY_DISCONNECT {
-        return gateway_disconnect_header(msg);
+        return Ok(gateway_disconnect_header(msg));
     }
     if *intent == ACTOR_ECHO {
-        return actor_echo_header(msg);
+        return Ok(actor_echo_header(msg));
     }
     if *intent == ACTOR_REQUEST {
-        return actor_request_header(msg);
+        return Ok(actor_request_header(msg));
     }
     if *intent == STORE_EVENT || *intent == STORE_EVENT_RESPONSE {
-        return store_event_message_header(msg);
+        return Ok(store_event_message_header(msg));
     }
     if *intent == STORE_DATA {
-        return store_data_message_header(msg);
+        return Ok(store_data_message_header(msg));
     }
     if *intent == STORE_BATCH_EVENTS {
-        return store_batch_events_message_header(msg);
+        return Ok(store_batch_events_message_header(msg));
     }
     if *intent == STORE_BATCH_TAGS {
-        return store_batch_tags_message_header(msg);
+        return Ok(store_batch_tags_message_header(msg));
     }
     if *intent == GET_EVENT {
-        return get_event_message_header(msg);
+        return Ok(get_event_message_header(msg));
     }
     if *intent == GET_EVENTS_FOR_TAGS {
-        return get_events_for_tags_message_header(msg);
+        return Ok(get_events_for_tags_message_header(msg));
     }
     if *intent == LINK_EVENT {
         return link_events_message_header(msg);
     }
     if *intent == UNLINK_EVENT {
-        return unlink_events_message_header(msg);
+        return Ok(unlink_events_message_header(msg));
     }
     if *intent == STORE_BATCH_LINKS {
-        return batch_link_events_message_header(msg);
+        return Ok(batch_link_events_message_header(msg));
     }
     if *intent == STATUS {
-        return status_header(msg);
+        return Ok(status_header(msg));
     }
 
     // Fallback: just include _msg_id if present
     if !msg.envelope.message_id.is_empty() {
-        format!("_msg_id={}", msg.envelope.message_id)
+        Ok(format!("_msg_id={}", msg.envelope.message_id))
     } else {
-        String::new()
+        Ok(String::new())
     }
 }
 
@@ -131,11 +187,21 @@ fn store_event_message_header(msg: &Message) -> String {
         }
         // Tags: 1-indexed, 4-digit zero-padded, format: freq:key=value.
         // neural_memory.tags is canonical (Go parity); event.tags is a legacy fallback.
-        let nm_tags = msg.neural_memory.as_ref().map(|nm| &nm.tags).filter(|t| !t.is_empty());
+        let nm_tags = msg
+            .neural_memory
+            .as_ref()
+            .map(|nm| &nm.tags)
+            .filter(|t| !t.is_empty());
         let tags: Vec<(i32, &str, String)> = match nm_tags {
             Some(tags) => tags
                 .iter()
-                .map(|t| (t.frequency, t.key.as_str(), super::encoder::serialize_tag_value(&t.value)))
+                .map(|t| {
+                    (
+                        t.frequency,
+                        t.key.as_str(),
+                        super::encoder::serialize_tag_value(&t.value),
+                    )
+                })
                 .collect(),
             None => event
                 .tags
@@ -144,7 +210,10 @@ fn store_event_message_header(msg: &Message) -> String {
                 .collect(),
         };
         for (i, (freq, key, value)) in tags.iter().enumerate() {
-            h.add(&format!("tag_{:04}", i + 1), &format!("{freq}:{key}={value}"));
+            h.add(
+                &format!("tag_{:04}", i + 1),
+                &format!("{freq}:{key}={value}"),
+            );
         }
     }
     h.add_if_nonempty("_msg_id", &msg.envelope.message_id);
@@ -235,7 +304,13 @@ fn get_event_message_header(msg: &Message) -> String {
         if opts.link_count != 0 {
             h.add("link_count", &opts.link_count.to_string());
         }
-        h.add("tag_format", &opts.tag_format.map(|tf| tf.to_string()).unwrap_or_else(|| "0".to_string()));
+        h.add(
+            "tag_format",
+            &opts
+                .tag_format
+                .map(|tf| tf.to_string())
+                .unwrap_or_else(|| "0".to_string()),
+        );
         match opts.tag_owner_output {
             TagOwnerOutput::EventKey => h.add("output_tag_owner", "Y"),
             TagOwnerOutput::UniqueId => h.add("output_tag_owner", "N"),
@@ -347,7 +422,8 @@ fn get_events_for_tags_message_header(msg: &Message) -> String {
     h.build()
 }
 
-fn link_events_message_header(msg: &Message) -> String {
+fn link_events_message_header(msg: &Message) -> Result<String, EncodeError> {
+    require_link_wire_fields(msg.link(), "LinkEvent")?;
     let mut h = Header::new();
     h.add("_db_cmd", "link");
 
@@ -365,13 +441,9 @@ fn link_events_message_header(msg: &Message) -> String {
         } else {
             h.add_if_nonempty("unique_id_b", &link.unique_id_b);
         }
-        if link.strength_a != 0.0 {
-            h.add("strength_a", &link.strength_a.to_string());
-        }
-        if link.strength_b != 0.0 {
-            h.add("strength_b", &link.strength_b.to_string());
-        }
-        h.add_if_nonempty("category", &link.category);
+        h.add("strength_a", &link.strength_a.to_string());
+        h.add("strength_b", &link.strength_b.to_string());
+        h.add("category", &link.category);
         let loc_sep = if link.location_separator.is_empty() {
             "|"
         } else {
@@ -389,7 +461,7 @@ fn link_events_message_header(msg: &Message) -> String {
         }
     }
     h.add_if_nonempty("_msg_id", &msg.envelope.message_id);
-    h.build()
+    Ok(h.build())
 }
 
 fn unlink_events_message_header(msg: &Message) -> String {

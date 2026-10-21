@@ -10,8 +10,15 @@ use crate::{
 
 /// Performs one AIP probe send. Callers wire this to their client stack.
 #[allow(dead_code)]
-pub type SendFunc =
-    Box<dyn Fn(Message, &str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Message, GatewayDError>> + Send>> + Send + Sync>;
+pub type SendFunc = Box<
+    dyn Fn(
+            Message,
+            &str,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Message, GatewayDError>> + Send>,
+        > + Send
+        + Sync,
+>;
 
 /// Tunes the readiness polling loop. Zero fields fall back to defaults.
 #[derive(Debug, Clone, Default)]
@@ -136,12 +143,8 @@ where
 
     while Instant::now() < deadline {
         attempt += 1;
-        let probe_msg = build_actor_health_probe_message(
-            actor_address,
-            from_address,
-            client_name,
-            actor_type,
-        );
+        let probe_msg =
+            build_actor_health_probe_message(actor_address, from_address, client_name, actor_type);
         let label = format!("aip_ready_{actor_address}");
         let result = send(probe_msg, label).await;
 
@@ -276,17 +279,15 @@ mod tests {
                 "connection to gateway was lost during request",
             ))
         };
-        assert!(
-            wait_for_actor_aip_ready(
-                send,
-                "a@zeroth.pod-os.com",
-                "c@zeroth.pod-os.com",
-                "c",
-                "socket",
-                fast_config(),
-            )
-            .await
-            .is_err()
-        );
+        assert!(wait_for_actor_aip_ready(
+            send,
+            "a@zeroth.pod-os.com",
+            "c@zeroth.pod-os.com",
+            "c",
+            "socket",
+            fast_config(),
+        )
+        .await
+        .is_err());
     }
 }

@@ -164,11 +164,7 @@ async fn spawn_mem_gateway(echo_msg_id: bool) -> (String, String, Arc<MemGateway
             gw.run(stream).await;
         }
     });
-    (
-        addr.ip().to_string(),
-        addr.port().to_string(),
-        gateway,
-    )
+    (addr.ip().to_string(), addr.port().to_string(), gateway)
 }
 
 #[tokio::test]
@@ -197,7 +193,10 @@ async fn store_event_reply_with_event_type_in_type_field_correlates() {
         ..Default::default()
     };
 
-    let resp = client.send_message(&mut msg).await.expect("store_event reply");
+    let resp = client
+        .send_message(&mut msg)
+        .await
+        .expect("store_event reply");
     assert_eq!(resp.processing_status(), "OK");
     assert_eq!(gateway.store_replies.load(Ordering::SeqCst), 1);
 
@@ -230,7 +229,10 @@ async fn store_event_reply_without_msg_id_matches_by_unique_id() {
         ..Default::default()
     };
 
-    let resp = client.send_message(&mut msg).await.expect("unique_id fallback");
+    let resp = client
+        .send_message(&mut msg)
+        .await
+        .expect("unique_id fallback");
     assert_eq!(resp.processing_status(), "OK");
     assert_eq!(gateway.store_replies.load(Ordering::SeqCst), 1);
 
@@ -270,7 +272,11 @@ async fn liveness_probe_cancel_does_not_leave_stale_pending() {
         }
     });
 
-    let mut cfg = test_config(&addr.ip().to_string(), &addr.port().to_string(), "probe-pending");
+    let mut cfg = test_config(
+        &addr.ip().to_string(),
+        &addr.port().to_string(),
+        "probe-pending",
+    );
     cfg.liveness_probe_interval = Some(std::time::Duration::from_millis(100));
     cfg.liveness_probe_timeout = Some(std::time::Duration::from_millis(50));
     cfg.liveness_probe_max_failures = Some(10);
