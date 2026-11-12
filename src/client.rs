@@ -34,7 +34,10 @@ use crate::{
     log::{Level, Logger, NoOpLogger, TracingLogger},
     message::{
         apply_tag_owner_output, decode_message, encode_message, header_map_from_raw, intents,
-        types::{Envelope, Message, SocketMessage, TagOwnerOutput},
+        AppendResult,
+        types::{
+            Envelope, EventFields, Message, NeuralMemoryFields, SocketMessage, Tag, TagOwnerOutput,
+        },
     },
 };
 
@@ -482,6 +485,65 @@ impl Client {
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
+
+    /// Write one StoreBatchTags of caller-named keys onto an existing event.
+    /// Every tag is sent with frequency 1. The batch `owner_unique_id` is the target.
+    /// A repeated value is a new observation and is written.
+    ///
+    /// `actor` is the recipient routing identity (`name@gateway`).
+    pub async fn append_tags(
+        &self,
+        actor: &str,
+        target_unique_id: &str,
+        tags: &[Tag],
+    ) -> Result<AppendResult, GatewayDError> {
+        if actor.is_empty() {
+            return Err(GatewayDError::new(
+                ErrCode::InvalidMessage,
+                "actor is required",
+            ));
+        }
+        if target_unique_id.is_empty() {
+            return Err(GatewayDError::new(
+                ErrCode::InvalidMessage,
+                "target unique id is required",
+            ));
+        }
+        if tags.is_empty() {
+            return Err(GatewayDError::new(
+                ErrCode::InvalidMessage,
+                "tags are required",
+            ));
+        }
+
+        let stored: Vec<Tag> = tags
+            .iter()
+            .map(|tag| {
+                let mut copy = tag.clone();
+                copy.frequency = 1;
+                copy
+            })
+            .collect();
+        let mut store_msg = Message {
+            envelope: Envelope {
+                to: actor.to_string(),
+                intent: intents::STORE_BATCH_TAGS.clone(),
+                ..Default::default()
+            },
+            event: Some(EventFields {
+                unique_id: target_unique_id.to_string(),
+                owner_unique_id: target_unique_id.to_string(),
+                ..Default::default()
+            }),
+            neural_memory: Some(NeuralMemoryFields {
+                tags: stored,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        self.send_message(&mut store_msg).await?;
+        Ok(AppendResult { wrote: true })
+    }
 
     /// Send a message and await its response.
     pub async fn send_message(&self, msg: &mut Message) -> Result<Arc<Message>, GatewayDError> {

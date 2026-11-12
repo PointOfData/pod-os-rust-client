@@ -7,6 +7,7 @@ pub mod header;
 pub mod intents;
 pub mod search;
 pub mod tag_format;
+pub mod tag_history;
 pub mod types;
 pub mod utils;
 pub mod validate;
@@ -33,6 +34,10 @@ pub use intents::{
     UNLINK_EVENT, UNLINK_EVENT_RESPONSE,
 };
 pub use tag_format::apply_tag_owner_output;
+pub use tag_history::{
+    field_history, latest_by_key, suggest_delta, tag_search_clauses,
+    AppendResult, TagSighting, TagTerm,
+};
 pub use types::{
     BatchEventSpec, BatchLinkEventSpec, BriefHitRecord, DataType, DateTimeObject, Envelope,
     EventFields, GetEventOptions, GetEventsForTagsOptions, LinkFields, Linked, Message,

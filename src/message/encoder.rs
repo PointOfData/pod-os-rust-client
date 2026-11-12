@@ -258,6 +258,21 @@ pub fn format_batch_link_events_payload(
         if !l.r#type.is_empty() {
             push_field(&mut out, "type", &l.r#type);
         }
+        if !l.owner_id.is_empty() {
+            push_field(&mut out, "owner_event_id", &l.owner_id);
+        }
+        if !l.owner_unique_id.is_empty() {
+            push_field(&mut out, "owner_unique_id", &l.owner_unique_id);
+        }
+        if !l.timestamp.is_empty() {
+            push_field(&mut out, "timestamp", &l.timestamp);
+        }
+        if !l.location.is_empty() {
+            push_field(&mut out, "loc", &l.location);
+        }
+        if !l.location_separator.is_empty() {
+            push_field(&mut out, "loc_delim", &l.location_separator);
+        }
     }
     Ok(out)
 }
@@ -553,5 +568,35 @@ mod tests {
         assert!(payload.contains("strength_a=-0.5"));
         assert!(payload.contains("strength_b=1"));
         assert!(payload.contains("category=related"));
+    }
+
+    #[test]
+    fn batch_link_payload_emits_owner_event_id() {
+        use crate::message::types::{BatchLinkEventSpec, EventFields, LinkFields};
+        let spec = BatchLinkEventSpec {
+            event: EventFields {
+                unique_id: "lk1".into(),
+                ..Default::default()
+            },
+            link: LinkFields {
+                unique_id_a: "a".into(),
+                unique_id_b: "b".into(),
+                strength_a: 0.8,
+                strength_b: 0.2,
+                category: "related".into(),
+                owner_id: "$sys".into(),
+                timestamp: "+1".into(),
+                location: "TERRA|0|0|0".into(),
+                location_separator: "|".into(),
+                ..Default::default()
+            },
+        };
+        let payload = format_batch_link_events_payload(&[spec]).unwrap();
+        assert!(payload.contains("unique_id=lk1"));
+        assert!(payload.contains("owner_event_id=$sys"));
+        assert!(payload.contains("timestamp=+1"));
+        assert!(payload.contains("loc=TERRA|0|0|0"));
+        assert!(payload.contains("loc_delim=|"));
+        assert_eq!(payload.matches("unique_id=").count(), 1);
     }
 }

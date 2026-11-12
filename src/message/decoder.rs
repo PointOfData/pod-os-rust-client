@@ -722,24 +722,29 @@ fn parse_tag_output_line(s: &str) -> Option<TagOutput> {
 
 /// GetEvent `_linktag` / `_target_event_tag` key=value rows.
 /// Format: `_linktag	event_id={id}	unique=	freq=	timestamp=	value=`
-fn parse_get_event_kv_tag_line(line: &str, id_key: &str) -> Option<(String, TagOutput)> {
-    let fields = parse_tab_line(line);
-    let id = fields.get(id_key).cloned().filter(|s| !s.is_empty())?;
+fn tag_from_kv_fields(fields: &HashMap<String, String>) -> Option<TagOutput> {
     let value = fields.get("value").cloned().unwrap_or_default();
+    if value.is_empty() && fields.get("freq").is_none() {
+        return None;
+    }
     let (key, val) = match value.split_once('=') {
         Some((k, v)) if !k.is_empty() => (k.to_string(), v.to_string()),
         _ => (String::new(), value),
     };
-    Some((
-        id,
-        TagOutput {
-            frequency: fields.get("freq").and_then(|v| v.parse().ok()).unwrap_or(0),
-            key,
-            value: val,
-            timestamp: fields.get("timestamp").cloned().unwrap_or_default(),
-            ..Default::default()
-        },
-    ))
+    Some(TagOutput {
+        frequency: fields.get("freq").and_then(|v| v.parse().ok()).unwrap_or(0),
+        key,
+        value: val,
+        timestamp: fields.get("timestamp").cloned().unwrap_or_default(),
+        ..Default::default()
+    })
+}
+
+fn parse_get_event_kv_tag_line(line: &str, id_key: &str) -> Option<(String, TagOutput)> {
+    let fields = parse_tab_line(line);
+    let id = fields.get(id_key).cloned().filter(|s| !s.is_empty())?;
+    let tag = tag_from_kv_fields(&fields)?;
+    Some((id, tag))
 }
 
 // ── GetEvent response parser ─────────────────────────────────────────────────
@@ -756,7 +761,8 @@ fn parse_get_event_response(msg: &mut Message, hm: &HashMap<String, String>, pay
     // Payload-embedded links (when get_links=Y). send_data blob stays on msg.payload.
     let request_snapshot = msg.event.clone();
     let mut links: Vec<Linked> = Vec::new();
-    let mut link_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
+    let mut link_tags_by_unique: HashMap<String, Vec<TagOutput>> = HashMap::new();
+    let mut link_tags_by_id: HashMap<String, Vec<TagOutput>> = HashMap::new();
     let mut target_tags: HashMap<String, Vec<TagOutput>> = HashMap::new();
 
     for line in payload.lines() {
@@ -766,12 +772,19 @@ fn parse_get_event_response(msg: &mut Message, hm: &HashMap<String, String>, pay
         if let Some(rest) = line.strip_prefix("_link=") {
             links.push(parse_get_event_linked(rest, hm, request_snapshot.as_ref()));
         } else if line.starts_with("_linktag") {
-            if let Some((link_id, tag)) = parse_get_event_kv_tag_line(line, "event_id") {
-                link_tags.entry(link_id).or_default().push(tag);
+            let fields = parse_tab_line(line);
+            if let Some(tag) = tag_from_kv_fields(&fields) {
+                let unique = fields.get("unique").cloned().unwrap_or_default();
+                let event_id = fields.get("event_id").cloned().unwrap_or_default();
+                if !unique.is_empty() {
+                    link_tags_by_unique.entry(unique).or_default().push(tag);
+                } else if !event_id.is_empty() {
+                    link_tags_by_id.entry(event_id).or_default().push(tag);
+                }
             } else if let Some(rest) = line.strip_prefix("_linktag\t") {
                 if let Some(t) = parse_tag_output_line(rest) {
                     let link_id = rest.split('\t').next().unwrap_or("").to_string();
-                    link_tags.entry(link_id).or_default().push(t);
+                    link_tags_by_id.entry(link_id).or_default().push(t);
                 }
             }
         } else if line.starts_with("_target_event_tag") || line.starts_with("_targettag") {
@@ -791,7 +804,11 @@ fn parse_get_event_response(msg: &mut Message, hm: &HashMap<String, String>, pay
 
     // Attach link tags and optional target tags
     for link in &mut links {
-        if let Some(lt) = link_tags.remove(&link.id) {
+        if !link.unique_id.is_empty() {
+            if let Some(lt) = link_tags_by_unique.remove(&link.unique_id) {
+                link.tags = lt;
+            }
+        } else if let Some(lt) = link_tags_by_id.remove(&link.id) {
             link.tags = lt;
         }
         if let Some(tt) = target_tags.remove(&link.target_id) {
